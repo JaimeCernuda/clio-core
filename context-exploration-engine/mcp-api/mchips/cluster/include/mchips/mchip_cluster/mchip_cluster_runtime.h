@@ -63,6 +63,10 @@ class Runtime : public sdk::MchipBase {
 
  private:
   Client client_;
+
+  protocol::json HandleClusterStatus(const protocol::json& args);
+  protocol::json HandleListPools(const protocol::json& args);
+  protocol::json HandlePoolStats(const protocol::json& args);
 };
 
 }  // namespace mchips::mchip_cluster

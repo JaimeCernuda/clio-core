@@ -71,19 +71,19 @@ class Runtime : public sdk::MchipBase {
  private:
   Client client_;
 
-  // TODO(Phase B.5): Tool handler methods
-  // protocol::json HandlePutBlob(const protocol::json& args);
-  // protocol::json HandleGetBlob(const protocol::json& args);
-  // protocol::json HandleGetBlobSize(const protocol::json& args);
-  // protocol::json HandleListBlobsInTag(const protocol::json& args);
-  // protocol::json HandleDeleteBlob(const protocol::json& args);
-  // protocol::json HandleTagQuery(const protocol::json& args);
-  // protocol::json HandleBlobQuery(const protocol::json& args);
-  // protocol::json HandlePollTelemetryLog(const protocol::json& args);
-  // protocol::json HandleReorganizeBlob(const protocol::json& args);
-  // protocol::json HandleInitializeCteRuntime(const protocol::json& args);
-  // protocol::json HandleGetClientStatus(const protocol::json& args);
-  // protocol::json HandleGetCteTypes(const protocol::json& args);
+  // Tool handler methods (each implements one CTE MCP tool)
+  protocol::json HandlePutBlob(const protocol::json& args);
+  protocol::json HandleGetBlob(const protocol::json& args);
+  protocol::json HandleGetBlobSize(const protocol::json& args);
+  protocol::json HandleListBlobsInTag(const protocol::json& args);
+  protocol::json HandleDeleteBlob(const protocol::json& args);
+  protocol::json HandleTagQuery(const protocol::json& args);
+  protocol::json HandleBlobQuery(const protocol::json& args);
+  protocol::json HandlePollTelemetryLog(const protocol::json& args);
+  protocol::json HandleReorganizeBlob(const protocol::json& args);
+  protocol::json HandleInitializeCteRuntime(const protocol::json& args);
+  protocol::json HandleGetClientStatus(const protocol::json& args);
+  protocol::json HandleGetCteTypes(const protocol::json& args);
 };
 
 }  // namespace mchips::mchip_cte

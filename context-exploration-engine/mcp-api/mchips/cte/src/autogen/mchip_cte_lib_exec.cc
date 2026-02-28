@@ -96,22 +96,7 @@ void Runtime::DelTask(chi::u32 method, hipc::FullPtr<chi::Task> task_ptr) {
   (void)method; (void)task_ptr;
 }
 
-void Runtime::RegisterTools() {
-  // TODO(Phase B.5): Register all 12 CTE tools
-  // registrar_.Register(
-  //     protocol::ToolBuilder("put_blob")
-  //         .Description("Store a blob in CTE with automatic tiering")
-  //         .AddParam("tag_name", protocol::SchemaType::String, "Tag namespace", true)
-  //         .AddParam("blob_name", protocol::SchemaType::String, "Blob name", true)
-  //         .AddParam("data", protocol::SchemaType::String, "Base64-encoded data", true)
-  //         .AddParam("priority", protocol::SchemaType::Number, "Priority 0-1", false)
-  //         .Annotations({.readOnlyHint = false, .destructiveHint = false,
-  //                        .idempotentHint = true, .priority = 0.5})
-  //         .Build(),
-  //     [this](const protocol::json& args) { return HandlePutBlob(args); }
-  // );
-  // ... repeat for all 12 tools
-}
+// RegisterTools() is implemented in mchip_cte_runtime.cc
 
 }  // namespace mchips::mchip_cte
 

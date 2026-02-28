@@ -64,9 +64,7 @@ hipc::FullPtr<chi::Task> Runtime::NewTask(chi::u32 m) { (void)m; return {}; }
 void Runtime::Aggregate(chi::u32 m, hipc::FullPtr<chi::Task> o, const hipc::FullPtr<chi::Task>& r) { (void)m; (void)o; (void)r; }
 void Runtime::DelTask(chi::u32 m, hipc::FullPtr<chi::Task> t) { (void)m; (void)t; }
 
-void Runtime::RegisterTools() {
-  // TODO(Phase B.6): Register cluster tools (cluster_status, list_pools, pool_stats)
-}
+// RegisterTools() is implemented in mchip_cluster_runtime.cc
 
 }  // namespace mchips::mchip_cluster
 

@@ -62,6 +62,9 @@ class Runtime : public sdk::MchipBase {
 
  private:
   Client client_;
+
+  protocol::json HandleAssimilate(const protocol::json& args);
+  protocol::json HandleListFormats(const protocol::json& args);
 };
 
 }  // namespace mchips::mchip_cae
