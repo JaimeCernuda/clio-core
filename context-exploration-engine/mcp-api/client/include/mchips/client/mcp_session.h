@@ -22,12 +22,21 @@ class McpSession {
  public:
   McpSession() = default;
 
-  // TODO(Phase 2): Implement session state management
-  // void OnInitialized(const std::string& session_id,
-  //                    const protocol::InitializeResult& result);
-  // bool IsActive() const;
-  // const std::string& SessionId() const;
-  // const protocol::ServerCapabilities& ServerCaps() const;
+  /// Record a completed initialize handshake.
+  void OnInitialized(const std::string& session_id,
+                     const protocol::InitializeResult& result);
+
+  /// True if Initialize() has been called and the session is active.
+  bool IsActive() const { return active_; }
+
+  /// Return the MCP-Session-Id header value.
+  const std::string& SessionId() const { return session_id_; }
+
+  /// Return the negotiated server capabilities.
+  const protocol::ServerCapabilities& ServerCaps() const;
+
+  /// Mark the session as closed.
+  void Close() { active_ = false; }
 
  private:
   std::string session_id_;

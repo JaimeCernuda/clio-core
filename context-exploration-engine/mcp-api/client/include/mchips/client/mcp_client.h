@@ -37,17 +37,41 @@ class McpClient {
   explicit McpClient(const McpClientConfig& config);
   ~McpClient();
 
-  // TODO(Phase 2): Implement client methods
-  // protocol::InitializeResult Initialize();
-  // std::vector<protocol::ToolDefinition> ListTools();
-  // protocol::CallToolResult CallTool(const std::string& name,
-  //                                    const protocol::json& args);
-  // void Close();
+  /// Perform the MCP initialize handshake.
+  ///
+  /// Sends an initialize request, receives ServerCapabilities, then
+  /// sends the notifications/initialized notification. Stores the
+  /// session ID for subsequent requests.
+  ///
+  /// @throws std::runtime_error if the handshake fails.
+  protocol::InitializeResult Initialize();
+
+  /// List all tools available on the connected MCP server.
+  ///
+  /// @throws std::runtime_error if not initialized or request fails.
+  std::vector<protocol::ToolDefinition> ListTools();
+
+  /// Call a named tool with the given arguments.
+  ///
+  /// @param name  Tool name (e.g., "put_blob" or "cte__put_blob")
+  /// @param args  Tool arguments as a JSON object
+  /// @throws std::runtime_error if not initialized or request fails.
+  protocol::CallToolResult CallTool(const std::string& name,
+                                     const protocol::json& args);
+
+  /// Close the MCP session (sends notifications/cancelled + HTTP DELETE).
+  void Close();
+
+  /// True if Initialize() has been called successfully.
+  bool IsInitialized() const { return session_.IsActive(); }
 
  private:
   McpClientConfig config_;
-  // McpTransport transport_;
-  // McpSession session_;
+  McpTransport transport_;
+  McpSession session_;
+
+  int next_id_ = 1;
+  protocol::json NextId() { return next_id_++; }
 };
 
 }  // namespace mchips::client

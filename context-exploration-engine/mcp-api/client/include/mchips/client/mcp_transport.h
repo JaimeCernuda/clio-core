@@ -9,6 +9,9 @@
 
 #include <mchips/protocol/json_rpc.h>
 
+#include <httplib.h>
+
+#include <memory>
 #include <string>
 
 namespace mchips::client {
@@ -26,16 +29,31 @@ class McpTransport {
   explicit McpTransport(const std::string& base_url);
   ~McpTransport();
 
-  // TODO(Phase 2): Implement transport methods
-  // protocol::json SendRequest(const protocol::JsonRpcRequest& request);
-  // void SendNotification(const protocol::JsonRpcNotification& notif);
-  // void SetSessionId(const std::string& session_id);
-  // void Close();
+  /// Send a JSON-RPC request and return the parsed response body as JSON.
+  ///
+  /// Sets Content-Type: application/json and MCP-Protocol-Version headers.
+  /// If a session ID has been set, includes MCP-Session-Id.
+  ///
+  /// @throws std::runtime_error on HTTP error or connection failure.
+  protocol::json SendRequest(const protocol::JsonRpcRequest& request);
+
+  /// Send a JSON-RPC notification (fire-and-forget, no response expected).
+  void SendNotification(const protocol::JsonRpcNotification& notif);
+
+  /// Store the session ID for all subsequent requests.
+  void SetSessionId(const std::string& session_id);
+
+  /// Send HTTP DELETE to close the session, then reset session state.
+  void Close();
 
  private:
   std::string base_url_;
+  std::string path_;          ///< URL path component (e.g., "/mcp")
   std::string session_id_;
-  // httplib::Client http_client_;  // TODO(Phase 2)
+  std::unique_ptr<httplib::Client> http_client_;
+
+  /// Apply common MCP headers to a request (called before every POST/DELETE).
+  httplib::Headers MakeHeaders() const;
 };
 
 }  // namespace mchips::client
