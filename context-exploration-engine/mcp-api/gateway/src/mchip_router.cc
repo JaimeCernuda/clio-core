@@ -6,18 +6,13 @@
 
 #include "mchips/mcp_gateway/mchip_router.h"
 
-// TODO(Phase B.4): Implement MchipRouter discovery and refresh
+// MchipRouter core functionality (routing, discovery) is implemented as
+// inline methods in the header since they only manipulate the routes_ map
+// and forward to MchipClient.
 //
-// RefreshTools():
-//   - For each registered MChiP route:
-//     - Send AsyncListMcpTools via MchipClient
-//     - co_await the response
-//     - Parse JSON array of ToolDefinitions
-//     - Update route.tools cache
-//   - Rebuild qualified name index
-//
-// Called on gateway Create() and when MChiPs send
-// notifications/tools/list_changed.
+// RefreshTools() requires Chimaera co_await — implemented in
+// gateway_runtime.cc within the Create() coroutine where the RunContext
+// is available.
 
 namespace mchips::mcp_gateway {
 }  // namespace mchips::mcp_gateway

@@ -9,6 +9,7 @@
 
 #include <chimaera/container.h>
 
+#include <mchips/protocol/json_rpc.h>
 #include <mchips/mcp_gateway/gateway_client.h>
 #include <mchips/mcp_gateway/gateway_tasks.h>
 #include <mchips/mcp_gateway/http_server.h>
@@ -101,6 +102,14 @@ class Runtime : public chi::Container {
   SessionManager session_manager_;
   SseWriter sse_writer_;
   MchipRouter router_;
+
+  // Synchronous dispatch helpers (called from httplib thread pool)
+  HttpResponse HandleHttpRequestSync(const std::string& body,
+                                     const std::string& session_id);
+  HttpResponse HandleInitializeSync(const protocol::JsonRpcRequest& req);
+  HttpResponse HandleToolsListSync(const protocol::JsonRpcRequest& req);
+  HttpResponse HandleToolsCallSync(const protocol::JsonRpcRequest& req);
+  HttpResponse HandleDeleteSync(const std::string& session_id);
 };
 
 }  // namespace mchips::mcp_gateway

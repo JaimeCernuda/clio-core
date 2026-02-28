@@ -27,10 +27,18 @@ class SseWriter {
  public:
   SseWriter() = default;
 
-  // TODO(Phase B.4): Implement SSE formatting and streaming
-  // std::string FormatEvent(const std::string& event_type,
-  //                         const std::string& data,
-  //                         const std::string& event_id = "");
+  /// Format an SSE event string.
+  ///
+  /// @param event_type  Event type name (e.g., "message", "error")
+  /// @param data        Data payload (JSON string)
+  /// @param event_id    Optional event ID for reconnection support
+  /// @return Formatted SSE event string ready to send
+  std::string FormatEvent(const std::string& event_type,
+                           const std::string& data,
+                           const std::string& event_id = "") const;
+
+  /// Format a keep-alive comment (prevents connection timeouts).
+  std::string FormatKeepAlive() const;
 };
 
 }  // namespace mchips::mcp_gateway

@@ -7,8 +7,11 @@
 #ifndef MCHIPS_MCP_GATEWAY_HTTP_SERVER_H_
 #define MCHIPS_MCP_GATEWAY_HTTP_SERVER_H_
 
+#include <httplib.h>
+
 #include <functional>
 #include <string>
+#include <thread>
 
 namespace mchips::mcp_gateway {
 
@@ -43,15 +46,27 @@ class HttpServer {
       const std::string& session_id)>;
 
   HttpServer() = default;
+  ~HttpServer();
 
-  // TODO(Phase B.4): Implement HTTP server lifecycle
-  // void Start(const std::string& host, int port, int num_threads);
-  // void Stop();
-  // void SetRequestHandler(RequestHandler handler);
-  // void SetDeleteHandler(DeleteHandler handler);
+  /// Register the POST /mcp request handler.
+  void SetRequestHandler(RequestHandler handler);
+
+  /// Register the DELETE /mcp session-close handler.
+  void SetDeleteHandler(DeleteHandler handler);
+
+  /// Start listening on the given address and port.
+  ///
+  /// Spawns a background thread. Returns after the server is ready.
+  void Start(const std::string& host, int port, int num_threads);
+
+  /// Gracefully stop the HTTP server and join the listener thread.
+  void Stop();
 
  private:
-  // httplib::Server server_;  // TODO(Phase B.4)
+  httplib::Server server_;
+  std::thread server_thread_;
+  RequestHandler request_handler_;
+  DeleteHandler delete_handler_;
 };
 
 }  // namespace mchips::mcp_gateway
