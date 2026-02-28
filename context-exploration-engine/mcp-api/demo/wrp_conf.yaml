@@ -1,0 +1,15 @@
+# MChiPs Demo Configuration
+# Chimaera runtime configuration for the MCP gateway demo.
+# TODO(Phase 5): Fill in with proper Chimaera + CTE + MCP pool configuration.
+
+# Runtime configuration
+chimaera:
+  num_workers: 4
+  shm_size: "256M"
+
+# MCP server configuration
+mchips:
+  host: "0.0.0.0"
+  port: 8080
+  http_threads: 4
+  session_timeout_sec: 1800  # 30 minutes

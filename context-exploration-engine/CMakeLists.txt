@@ -8,6 +8,10 @@ set(WRP_CEE_ROOT ${CMAKE_CURRENT_SOURCE_DIR})
 message(STATUS "Context Exploration Engine: Building API components")
 add_subdirectory(api)
 
+# MCP API (MChiPs) — C++ MCP gateway for IOWarp
+message(STATUS "Context Exploration Engine: Building MCP API (MChiPs)")
+add_subdirectory(mcp-api)
+
 # hdf-compass and mcp-hdf-demo are standalone components
 message(STATUS "  hdf-compass and mcp-hdf-demo are standalone components")
 message(STATUS "  To build them, navigate to their respective directories")

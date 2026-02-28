@@ -1,0 +1,25 @@
+# MChiPs MCP Server ChiMod Configuration
+# Provides MCP-compliant HTTP gateway for IOWarp
+
+module_name: mcp
+namespace: mchips
+version: 0.1.0
+critical: false
+
+# Inherited Methods (from Chimaera base)
+kCreate: 0
+kDestroy: 1
+kNodeFailure: -1
+kRecover: -1
+kMigrate: -1
+kUpgrade: -1
+kMonitor: 9
+
+# MCP Server Methods (start from 10)
+kHandleHttpRequest: 10    # Process an incoming HTTP request (JSON-RPC)
+kCallTool: 11             # Invoke a registered MCP tool by name
+kListTools: 12            # Return list of available tools
+kInitializeSession: 13    # MCP initialize handshake
+kCloseSession: 14         # Clean up MCP session (DELETE)
+kStartHttpServer: 15      # Start the HTTP listener
+kStopHttpServer: 16       # Stop the HTTP listener
