@@ -1,0 +1,21 @@
+# MChiP CAE — Context Assimilation Engine MCP tools
+# Exposes data format transformation tools (assimilate, list_formats).
+# The gateway discovers this module and aggregates its tools with "cae__" prefix.
+
+module_name: mchip_cae
+namespace: mchips
+version: 0.1.0
+critical: false
+
+# Inherited Methods
+kCreate: 0
+kDestroy: 1
+kNodeFailure: -1
+kRecover: -1
+kMigrate: -1
+kUpgrade: -1
+kMonitor: 9
+
+# MChiP Standard Methods (from SDK)
+kListMcpTools: 10
+kCallMcpTool: 11

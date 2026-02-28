@@ -1,0 +1,24 @@
+# MChiPs MCP Gateway ChiMod Configuration
+# HTTP gateway that discovers MChiP ChiMods, aggregates their tools,
+# and routes tools/call requests via Chimaera's task system.
+
+module_name: mcp_gateway
+namespace: mchips
+version: 0.1.0
+critical: false
+
+# Inherited Methods (from Chimaera base)
+kCreate: 0
+kDestroy: 1
+kNodeFailure: -1
+kRecover: -1
+kMigrate: -1
+kUpgrade: -1
+kMonitor: 9
+
+# Gateway Methods (start from 10)
+kHandleHttpRequest: 10    # Process an incoming HTTP request (JSON-RPC)
+kInitializeSession: 11    # MCP initialize handshake
+kCloseSession: 12         # Clean up MCP session (DELETE)
+kStartHttpServer: 13      # Start the HTTP listener
+kStopHttpServer: 14       # Stop the HTTP listener

@@ -33,11 +33,16 @@ FetchContent_MakeAvailable(httplib)
 # Protocol library — standalone MCP types, no Chimaera dependency
 add_subdirectory(protocol)
 
-# Server ChiMod — MCP gateway as a Chimaera module
-add_subdirectory(server)
+# SDK library — MChiP base classes, task types, client utilities
+add_subdirectory(sdk)
 
-# Tools — IOWarp-specific MCP tool implementations
-add_subdirectory(tools)
+# Gateway ChiMod — HTTP frontend, session management, MChiP routing
+add_subdirectory(gateway)
+
+# MChiP ChiMods — each MChiP is its own ChiMod
+add_subdirectory(mchips/cte)
+add_subdirectory(mchips/cae)
+add_subdirectory(mchips/cluster)
 
 # Standalone MCP client — no Chimaera dependency
 add_subdirectory(client)
