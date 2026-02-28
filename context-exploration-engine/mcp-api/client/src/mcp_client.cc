@@ -82,16 +82,10 @@ protocol::InitializeResult McpClient::Initialize() {
   notif.method = protocol::methods::kInitialized;
   transport_.SendNotification(notif);
 
-  // Store session state (session ID may come from Mcp-Session-Id header;
-  // for simplicity we use a placeholder if not in response body)
-  std::string session_id;
-  if (response_json.contains("sessionId")) {
-    session_id = response_json["sessionId"].get<std::string>();
-  }
+  // Session ID was auto-captured from the Mcp-Session-Id response header
+  // inside SendRequest (per MCP Streamable HTTP spec 2025-11-25).
+  std::string session_id = transport_.GetSessionId();
   session_.OnInitialized(session_id, init_result);
-  if (!session_id.empty()) {
-    transport_.SetSessionId(session_id);
-  }
 
   return init_result;
 }

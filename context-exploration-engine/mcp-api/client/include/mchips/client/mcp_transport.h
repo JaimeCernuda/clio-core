@@ -43,6 +43,9 @@ class McpTransport {
   /// Store the session ID for all subsequent requests.
   void SetSessionId(const std::string& session_id);
 
+  /// Return the current session ID (may be populated from server header).
+  const std::string& GetSessionId() const;
+
   /// Send HTTP DELETE to close the session, then reset session state.
   void Close();
 

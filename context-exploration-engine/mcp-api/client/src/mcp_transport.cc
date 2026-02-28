@@ -7,6 +7,7 @@
 #include <mchips/client/mcp_transport.h>
 #include <mchips/protocol/mcp_types.h>
 
+#include <sstream>
 #include <stdexcept>
 #include <string>
 
@@ -67,7 +68,46 @@ httplib::Headers McpTransport::MakeHeaders() const {
   return headers;
 }
 
+namespace {
+
+/// Extract the first JSON payload from an SSE response body.
+///
+/// SSE lines look like:
+///   event: message\n
+///   data: {...}\n
+///   \n
+///
+/// Returns the first non-empty "data:" value found, or throws if none.
+std::string ExtractSseData(const std::string& sse_body) {
+  std::string data_value;
+  std::istringstream stream(sse_body);
+  std::string line;
+  while (std::getline(stream, line)) {
+    // Strip trailing CR (Windows line endings)
+    if (!line.empty() && line.back() == '\r') {
+      line.pop_back();
+    }
+    if (line.substr(0, 5) == "data:") {
+      std::string val = line.substr(5);
+      // Strip leading space
+      if (!val.empty() && val.front() == ' ') {
+        val = val.substr(1);
+      }
+      if (!val.empty()) {
+        return val;  // Return first non-empty data line
+      }
+    }
+  }
+  throw std::runtime_error(
+      "No 'data:' field found in SSE response: " + sse_body);
+}
+
+}  // namespace
+
 /// Send a JSON-RPC request via HTTP POST and return the parsed JSON body.
+///
+/// Handles both plain JSON and SSE-formatted responses, as per MCP
+/// Streamable HTTP spec: servers may respond with either content type.
 protocol::json McpTransport::SendRequest(
     const protocol::JsonRpcRequest& request) {
   auto body = request.ToJson().dump();
@@ -86,13 +126,36 @@ protocol::json McpTransport::SendRequest(
         ": " + result->body);
   }
 
+  // Capture session ID if the server sends it as a response header.
+  // Per MCP spec 2025-11-25: the server assigns a session ID via
+  // 'Mcp-Session-Id' on the initialize response.
+  auto sid = result->get_header_value("Mcp-Session-Id");
+  if (!sid.empty() && session_id_.empty()) {
+    session_id_ = sid;
+  }
+
+  // Check response content type — MCP servers may return either format
+  auto content_type = result->get_header_value("Content-Type");
+  std::string json_str;
+  if (content_type.find("text/event-stream") != std::string::npos) {
+    // SSE response: extract first data: line
+    json_str = ExtractSseData(result->body);
+  } else {
+    json_str = result->body;
+  }
+
   try {
-    return protocol::json::parse(result->body);
+    return protocol::json::parse(json_str);
   } catch (const protocol::json::parse_error& e) {
     throw std::runtime_error(
         std::string("Response JSON parse error: ") + e.what() +
-        " body: " + result->body);
+        " body: " + json_str);
   }
+}
+
+/// Return the current session ID (captured from server response headers).
+const std::string& McpTransport::GetSessionId() const {
+  return session_id_;
 }
 
 /// Send a notification (no response expected).
