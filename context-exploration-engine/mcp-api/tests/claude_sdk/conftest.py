@@ -38,7 +38,10 @@ def claude_options(gateway_url):
         pytest.skip("~/.claude OAuth token not found")
 
     return ClaudeAgentOptions(
-        mcp_servers={"mchips": {"url": gateway_url}},
+        mcp_servers={"mchips": {"type": "http", "url": gateway_url}},
+        permission_mode="bypassPermissions",
+        max_turns=10,
+        env={"CLAUDECODE": ""},
     )
 
 
