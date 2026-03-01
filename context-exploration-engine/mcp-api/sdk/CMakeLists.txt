@@ -55,7 +55,8 @@ foreach(_mchip_export
     mchips_mcp_gateway
     mchips_mchip_cte
     mchips_mchip_cae
-    mchips_mchip_cluster)
+    mchips_mchip_cluster
+    mchips_mchip_demo)
   install(TARGETS mchips_sdk
     EXPORT ${_mchip_export}
     LIBRARY DESTINATION lib

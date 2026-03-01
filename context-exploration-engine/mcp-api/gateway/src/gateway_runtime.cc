@@ -46,6 +46,7 @@ chi::TaskResume Runtime::Create(hipc::FullPtr<CreateTask> task,
   router_.RegisterMchip("cte",     chi::PoolId(701, 0));
   router_.RegisterMchip("cae",     chi::PoolId(702, 0));
   router_.RegisterMchip("cluster", chi::PoolId(703, 0));
+  router_.RegisterMchip("demo",    chi::PoolId(704, 0));
 
   // Start HTTP server via the StartHttpServer task mechanism
   // Note: RefreshTools() is called lazily on first tools/list request from the

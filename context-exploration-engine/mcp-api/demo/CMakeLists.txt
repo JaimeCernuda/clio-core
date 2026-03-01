@@ -11,6 +11,7 @@ target_link_libraries(mchips_demo_server PRIVATE
   mchips_mchip_cte_runtime
   mchips_mchip_cae_runtime
   mchips_mchip_cluster_runtime
+  mchips_mchip_demo_runtime
 )
 
 # Demo MCP client — connects to server, lists tools, calls a tool

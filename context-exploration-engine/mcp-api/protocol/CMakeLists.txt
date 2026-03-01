@@ -13,6 +13,7 @@ cmake_minimum_required(VERSION 3.20)
 add_library(mchips_protocol SHARED
   src/json_rpc.cc
   src/mcp_types.cc
+  src/mcp_error.cc
   src/schema_generator.cc
 )
 
@@ -57,7 +58,8 @@ foreach(_mchip_export
     mchips_mcp_gateway
     mchips_mchip_cte
     mchips_mchip_cae
-    mchips_mchip_cluster)
+    mchips_mchip_cluster
+    mchips_mchip_demo)
   install(TARGETS mchips_protocol
     EXPORT ${_mchip_export}
     LIBRARY DESTINATION lib

@@ -43,6 +43,7 @@ add_subdirectory(gateway)
 add_subdirectory(mchips/cte)
 add_subdirectory(mchips/cae)
 add_subdirectory(mchips/cluster)
+add_subdirectory(mchips/demo)
 
 # Standalone MCP client — no Chimaera dependency
 add_subdirectory(client)

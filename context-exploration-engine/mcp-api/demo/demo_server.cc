@@ -30,6 +30,7 @@
 #include <wrp_cte/core/core_client.h>
 #include <wrp_cte/core/content_transfer_engine.h>
 #include <mchips/mchip_cluster/mchip_cluster_client.h>
+#include <mchips/mchip_demo/mchip_demo_client.h>
 
 namespace {
 
@@ -141,6 +142,19 @@ int main(int argc, char* argv[]) {
   }
   std::cout << "      Cluster MChiP ready.\n";
 
+  // ── Create Demo MChiP pool (704) ────────────────────────────────────────
+  std::cout << "[4b/5] Creating Demo MChiP pool (704)...\n";
+  {
+    mchips::mchip_demo::Client demo_client;
+    auto create_task = demo_client.AsyncCreate(
+        chi::PoolQuery::Broadcast(),
+        "mchip_demo",
+        chi::PoolId(704, 0));
+    create_task.Wait();
+    demo_client.Init(chi::PoolId(704, 0));
+  }
+  std::cout << "      Demo MChiP ready.\n";
+
   // ── Initialize CTE client directly (bypass WRP_CTE_CLIENT_INIT) ──────────
   // WRP_CTE_CLIENT_INIT calls ClientInit which calls AsyncCreate for pool 512
   // then Wait(). Pool 512 was already created by compose, so the admin returns
@@ -176,7 +190,7 @@ int main(int argc, char* argv[]) {
 
   std::cout << "\nMChiPs gateway running at http://" << host << ":" << port
             << "/mcp\n"
-            << "Tools available: cte__* (12), cae__* (2), cluster__* (3)\n"
+            << "Tools available: cte__* (12), cae__* (2), cluster__* (3), demo__* (2)\n"
             << "Press Ctrl-C to stop.\n\n";
 
   // ── Run until signal ─────────────────────────────────────────────────────
