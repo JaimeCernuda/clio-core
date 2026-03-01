@@ -83,6 +83,17 @@ public:
   }
 
   /**
+   * Directly mark CTE as initialized without going through ClientInit.
+   * Used by runtime processes (e.g. demo_server) that pre-create pool 512
+   * with storage config and then directly connect the client, bypassing
+   * the AsyncCreate→Wait path that deadlocks when pool already exists.
+   */
+  void ForceSetInitialized(bool v) {
+    is_initialized_ = v;
+    is_initializing_ = false;
+  }
+
+  /**
    * Query tags by regex pattern
    * @param tag_re Tag regex pattern
    * @param max_tags Maximum number of tags to return (0 = no limit)

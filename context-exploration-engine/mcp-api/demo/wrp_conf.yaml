@@ -2,8 +2,10 @@
 # Chimaera runtime compose config for the MCP gateway + MChiP ChiMods.
 
 # Runtime configuration
+# Use 8 workers so CTE pools (512, 701) land on different lanes/workers,
+# avoiding deadlock when CallMcpTool blocks on CTE API futures.
 chimaera:
-  num_workers: 4
+  num_workers: 8
   shm_size: "256M"
 
 # MCP gateway HTTP settings (passed to gateway CreateParams)
@@ -26,8 +28,9 @@ compose:
     capacity: "512MB"
 
   # === CTE — required for cte MChiP ===
+  # pool_name must match kCtePoolName = "wrp_cte_core" so ClientInit finds it.
   - mod_name: wrp_cte_core
-    pool_name: cte_main
+    pool_name: wrp_cte_core
     pool_query: local
     pool_id: "512.0"
     storage:
@@ -38,26 +41,6 @@ compose:
     dpe:
       dpe_type: "max_bw"
 
-  # === MCP Gateway ===
-  - mod_name: mchips_mcp_gateway
-    pool_name: mchips_gateway
-    pool_query: local
-    pool_id: "700.0"
-
-  # === CTE MChiP ===
-  - mod_name: mchips_mchip_cte
-    pool_name: mchips_cte
-    pool_query: local
-    pool_id: "701.0"
-
-  # === CAE MChiP ===
-  - mod_name: mchips_mchip_cae
-    pool_name: mchips_cae
-    pool_query: local
-    pool_id: "702.0"
-
-  # === Cluster MChiP ===
-  - mod_name: mchips_mchip_cluster
-    pool_name: mchips_cluster
-    pool_query: local
-    pool_id: "703.0"
+  # MCP Gateway (700), CTE MChiP (701), CAE (702), Cluster (703) are created
+  # manually in demo_server.cc so the gateway gets the correct port/threads
+  # from command-line args.  Do not add them here.

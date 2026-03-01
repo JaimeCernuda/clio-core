@@ -7,6 +7,7 @@
 #include "mchips/mchip_cte/mchip_cte_runtime.h"
 
 #include <mchips/protocol/schema_generator.h>
+#include <wrp_cte/core/content_transfer_engine.h>
 #include <wrp_cte/core/core_client.h>
 
 #include <stdexcept>
@@ -100,9 +101,15 @@ protocol::json MakeErrorResult(const std::string& error_msg) {
       {"isError", true}};
 }
 
-/// Return true if the WRP_CTE global client is initialized.
+/// Return true if the WRP_CTE global client is initialized and connected.
+///
+/// Uses CTE_MANAGER->IsInitialized() which is set by WRP_CTE_CLIENT_INIT
+/// only after a successful ClientInit (pool creation + client connection).
+/// WRP_CTE_CLIENT is a global HSHM pointer that is always non-null even
+/// before initialization, so checking it is not sufficient.
 bool IsCteInitialized() {
-  return WRP_CTE_CLIENT != nullptr;
+  auto* mgr = CTE_MANAGER;
+  return mgr != nullptr && mgr->IsInitialized();
 }
 
 }  // namespace
@@ -261,6 +268,378 @@ void Runtime::RegisterTools() {
               .idempotentHint = true, .priority = 0.2})
           .Build(),
       [this](const json& args) { return HandleGetCteTypes(args); });
+}
+
+//=============================================================================
+// CallMcpTool — co_await override for async CTE operations
+//=============================================================================
+
+/// Override CallMcpTool to dispatch data-plane tools using co_await.
+///
+/// Sync tools (get_client_status, get_cte_types) use the registrar.
+/// Async tools (put_blob, get_blob, etc.) use co_await on CTE futures so
+/// the Chimaera worker can process pool-512 tasks without deadlock.
+chi::TaskResume Runtime::CallMcpTool(hipc::FullPtr<sdk::CallMcpToolTask> task,
+                                      chi::RunContext& rctx) {
+  (void)rctx;
+  std::string tool_name = task->tool_name_.str();
+  auto args_str = task->args_json_.str();
+  auto args = protocol::json::parse(args_str, nullptr, false);
+
+  if (args.is_discarded()) {
+    task->result_json_ = MakeErrorResult("Invalid JSON arguments").dump();
+    task->is_error_ = 1;
+    co_return;
+  }
+
+  // --- put_blob (async) ---
+  if (tool_name == "put_blob") {
+    if (!IsCteInitialized()) {
+      task->result_json_ = MakeErrorResult(
+          "CTE runtime not initialized — call cte__initialize_cte_runtime first").dump();
+      task->is_error_ = 1;
+      co_return;
+    }
+    try {
+      auto tag_name  = args.at("tag_name").get<std::string>();
+      auto blob_name = args.at("blob_name").get<std::string>();
+      auto data_b64  = args.at("data").get<std::string>();
+      float priority = static_cast<float>(args.value("priority", 0.5));
+
+      auto data = Base64Decode(data_b64);
+      if (data.empty()) {
+        task->result_json_ = MakeErrorResult("Failed to decode base64 data").dump();
+        task->is_error_ = 1;
+        co_return;
+      }
+
+      // GetOrCreateTag — co_await avoids blocking the worker
+      auto tag_future = WRP_CTE_CLIENT->AsyncGetOrCreateTag(tag_name);
+      co_await tag_future;
+      if (tag_future->GetReturnCode() != 0) {
+        task->result_json_ = MakeErrorResult("GetOrCreateTag failed").dump();
+        task->is_error_ = 1;
+        co_return;
+      }
+      auto tag_id = tag_future->tag_id_;
+
+      // Copy to SHM and put blob
+      auto* ipc = CHI_IPC;
+      hipc::FullPtr<char> shm = ipc->AllocateBuffer(data.size());
+      if (shm.IsNull()) {
+        task->result_json_ = MakeErrorResult("SHM allocation failed").dump();
+        task->is_error_ = 1;
+        co_return;
+      }
+      memcpy(shm.ptr_, data.data(), data.size());
+      hipc::ShmPtr<> shm_ptr(shm.shm_);
+
+      auto put_future = WRP_CTE_CLIENT->AsyncPutBlob(
+          tag_id, blob_name, 0, data.size(), shm_ptr, priority);
+      co_await put_future;
+      ipc->FreeBuffer(shm);
+
+      if (put_future->GetReturnCode() != 0) {
+        task->result_json_ = MakeErrorResult(
+            "PutBlob failed (code=" +
+            std::to_string(put_future->GetReturnCode()) + ")").dump();
+        task->is_error_ = 1;
+        co_return;
+      }
+      task->result_json_ = MakeTextResult(
+          "Blob '" + blob_name + "' stored in tag '" + tag_name +
+          "' (" + std::to_string(data.size()) + " bytes, priority=" +
+          std::to_string(priority) + ")").dump();
+    } catch (const std::exception& e) {
+      task->result_json_ = MakeErrorResult(std::string("put_blob error: ") + e.what()).dump();
+      task->is_error_ = 1;
+    }
+    co_return;
+  }
+
+  // --- get_blob (async) ---
+  if (tool_name == "get_blob") {
+    if (!IsCteInitialized()) {
+      task->result_json_ = MakeErrorResult(
+          "CTE runtime not initialized — call cte__initialize_cte_runtime first").dump();
+      task->is_error_ = 1;
+      co_return;
+    }
+    try {
+      auto tag_name  = args.at("tag_name").get<std::string>();
+      auto blob_name = args.at("blob_name").get<std::string>();
+
+      // GetOrCreateTag (co_await)
+      auto tag_future = WRP_CTE_CLIENT->AsyncGetOrCreateTag(tag_name);
+      co_await tag_future;
+      auto tag_id = tag_future->tag_id_;
+
+      // GetBlobSize (co_await)
+      auto size_future = WRP_CTE_CLIENT->AsyncGetBlobSize(tag_id, blob_name);
+      co_await size_future;
+      chi::u64 size = size_future->size_;
+      if (size == 0) {
+        task->result_json_ = MakeTextResult("Blob '" + blob_name + "' has zero size").dump();
+        co_return;
+      }
+
+      // Allocate SHM output buffer and GetBlob (co_await)
+      auto* ipc = CHI_IPC;
+      hipc::FullPtr<char> shm = ipc->AllocateBuffer(size);
+      if (shm.IsNull()) {
+        task->result_json_ = MakeErrorResult("SHM allocation failed").dump();
+        task->is_error_ = 1;
+        co_return;
+      }
+      hipc::ShmPtr<> shm_ptr(shm.shm_);
+      auto get_future = WRP_CTE_CLIENT->AsyncGetBlob(
+          tag_id, blob_name, 0, size, 0, shm_ptr);
+      co_await get_future;
+      std::vector<char> buf(shm.ptr_, shm.ptr_ + size);
+      ipc->FreeBuffer(shm);
+
+      auto encoded = Base64Encode(buf);
+      protocol::json result;
+      result["content"] = protocol::json::array();
+      result["content"].push_back({{"type","text"},
+          {"text", "Blob '" + blob_name + "' (" + std::to_string(size) + " bytes):"}});
+      result["content"].push_back({{"type","text"}, {"text", encoded}});
+      result["isError"] = false;
+      result["size_bytes"] = size;
+      task->result_json_ = result.dump();
+    } catch (const std::exception& e) {
+      task->result_json_ = MakeErrorResult(std::string("get_blob error: ") + e.what()).dump();
+      task->is_error_ = 1;
+    }
+    co_return;
+  }
+
+  // --- get_blob_size (async) ---
+  if (tool_name == "get_blob_size") {
+    if (!IsCteInitialized()) {
+      task->result_json_ = MakeErrorResult(
+          "CTE runtime not initialized — call cte__initialize_cte_runtime first").dump();
+      task->is_error_ = 1;
+      co_return;
+    }
+    try {
+      auto tag_name  = args.at("tag_name").get<std::string>();
+      auto blob_name = args.at("blob_name").get<std::string>();
+      auto tag_future = WRP_CTE_CLIENT->AsyncGetOrCreateTag(tag_name);
+      co_await tag_future;
+      auto tag_id = tag_future->tag_id_;
+      auto size_future = WRP_CTE_CLIENT->AsyncGetBlobSize(tag_id, blob_name);
+      co_await size_future;
+      chi::u64 size = size_future->size_;
+      task->result_json_ = (protocol::json{
+          {"content", {{{"type","text"},{"text","Blob '" + blob_name + "' size: " + std::to_string(size) + " bytes"}}}},
+          {"isError", false},
+          {"size_bytes", size}}).dump();
+    } catch (const std::exception& e) {
+      task->result_json_ = MakeErrorResult(std::string("get_blob_size error: ") + e.what()).dump();
+      task->is_error_ = 1;
+    }
+    co_return;
+  }
+
+  // --- list_blobs_in_tag (async) ---
+  if (tool_name == "list_blobs_in_tag") {
+    if (!IsCteInitialized()) {
+      task->result_json_ = MakeErrorResult(
+          "CTE runtime not initialized — call cte__initialize_cte_runtime first").dump();
+      task->is_error_ = 1;
+      co_return;
+    }
+    try {
+      auto tag_name = args.at("tag_name").get<std::string>();
+      // BlobQuery with the tag name as regex (literal tag name for simple names)
+      // and ".*" to match all blobs in that tag.
+      auto future = WRP_CTE_CLIENT->AsyncBlobQuery(tag_name, ".*", 0);
+      co_await future;
+      std::string list_text = "Blobs in tag '" + tag_name + "':";
+      auto& blob_names = future->blob_names_;
+      for (size_t i = 0; i < blob_names.size(); ++i) {
+        list_text += "\n  - " + blob_names[i];
+      }
+      if (blob_names.empty()) list_text += " (empty)";
+      task->result_json_ = (protocol::json{
+          {"content", {{{"type","text"},{"text",list_text}}}},
+          {"isError", false},
+          {"blob_count", blob_names.size()}}).dump();
+    } catch (const std::exception& e) {
+      task->result_json_ = MakeErrorResult(std::string("list_blobs_in_tag error: ") + e.what()).dump();
+      task->is_error_ = 1;
+    }
+    co_return;
+  }
+
+  // --- delete_blob (async) ---
+  if (tool_name == "delete_blob") {
+    if (!IsCteInitialized()) {
+      task->result_json_ = MakeErrorResult(
+          "CTE runtime not initialized — call cte__initialize_cte_runtime first").dump();
+      task->is_error_ = 1;
+      co_return;
+    }
+    try {
+      auto tag_name  = args.at("tag_name").get<std::string>();
+      auto blob_name = args.at("blob_name").get<std::string>();
+      auto tag_future = WRP_CTE_CLIENT->AsyncGetOrCreateTag(tag_name);
+      co_await tag_future;
+      auto tag_id = tag_future->tag_id_;
+      auto del_future = WRP_CTE_CLIENT->AsyncDelBlob(tag_id, blob_name);
+      co_await del_future;
+      if (del_future->GetReturnCode() != 0) {
+        task->result_json_ = MakeErrorResult(
+            "DeleteBlob failed (code=" + std::to_string(del_future->GetReturnCode()) + ")").dump();
+        task->is_error_ = 1;
+        co_return;
+      }
+      task->result_json_ = MakeTextResult(
+          "Blob '" + blob_name + "' deleted from tag '" + tag_name + "'").dump();
+    } catch (const std::exception& e) {
+      task->result_json_ = MakeErrorResult(std::string("delete_blob error: ") + e.what()).dump();
+      task->is_error_ = 1;
+    }
+    co_return;
+  }
+
+  // --- tag_query (async) ---
+  if (tool_name == "tag_query") {
+    if (!IsCteInitialized()) {
+      task->result_json_ = MakeErrorResult(
+          "CTE runtime not initialized — call cte__initialize_cte_runtime first").dump();
+      task->is_error_ = 1;
+      co_return;
+    }
+    try {
+      // Accept both "pattern" and "tag_regex" argument names for flexibility.
+      std::string pattern = args.contains("pattern")
+          ? args["pattern"].get<std::string>()
+          : args.value("tag_regex", ".*");
+      auto max_results = static_cast<chi::u32>(args.value("max_results", 0));
+      auto future = WRP_CTE_CLIENT->AsyncTagQuery(pattern, max_results);
+      co_await future;
+      std::string result_text = "Tags matching '" + pattern + "':";
+      auto& tags = future->results_;
+      for (size_t i = 0; i < tags.size(); ++i) {
+        result_text += "\n  - " + tags[i];
+      }
+      if (tags.empty()) result_text += " (none)";
+      task->result_json_ = (protocol::json{
+          {"content", {{{"type","text"},{"text",result_text}}}},
+          {"isError", false},
+          {"tag_count", tags.size()}}).dump();
+    } catch (const std::exception& e) {
+      task->result_json_ = MakeErrorResult(std::string("tag_query error: ") + e.what()).dump();
+      task->is_error_ = 1;
+    }
+    co_return;
+  }
+
+  // --- blob_query (async) ---
+  if (tool_name == "blob_query") {
+    if (!IsCteInitialized()) {
+      task->result_json_ = MakeErrorResult(
+          "CTE runtime not initialized — call cte__initialize_cte_runtime first").dump();
+      task->is_error_ = 1;
+      co_return;
+    }
+    try {
+      auto tag_pattern  = args.value("tag_pattern",  ".*");
+      auto blob_pattern = args.value("blob_pattern", ".*");
+      auto max_results  = static_cast<chi::u32>(args.value("max_results", 0));
+      auto future = WRP_CTE_CLIENT->AsyncBlobQuery(tag_pattern, blob_pattern, max_results);
+      co_await future;
+      std::string result_text = "Blobs matching tag='" + tag_pattern +
+                                "', blob='" + blob_pattern + "':";
+      auto& tag_names  = future->tag_names_;
+      auto& blob_names = future->blob_names_;
+      for (size_t i = 0; i < tag_names.size(); ++i) {
+        result_text += "\n  - " + tag_names[i] + "/" + blob_names[i];
+      }
+      if (tag_names.empty()) result_text += " (none)";
+      task->result_json_ = (protocol::json{
+          {"content", {{{"type","text"},{"text",result_text}}}},
+          {"isError", false},
+          {"blob_count", tag_names.size()}}).dump();
+    } catch (const std::exception& e) {
+      task->result_json_ = MakeErrorResult(std::string("blob_query error: ") + e.what()).dump();
+      task->is_error_ = 1;
+    }
+    co_return;
+  }
+
+  // --- poll_telemetry_log (async) ---
+  if (tool_name == "poll_telemetry_log") {
+    if (!IsCteInitialized()) {
+      task->result_json_ = MakeErrorResult(
+          "CTE runtime not initialized — call cte__initialize_cte_runtime first").dump();
+      task->is_error_ = 1;
+      co_return;
+    }
+    try {
+      auto min_time = static_cast<uint64_t>(args.value("min_logical_time", 0));
+      auto future = WRP_CTE_CLIENT->AsyncPollTelemetryLog(min_time);
+      co_await future;
+      std::string result_text = "Telemetry log entries:";
+      auto& entries = future->entries_;
+      for (size_t i = 0; i < entries.size(); ++i) {
+        result_text += "\n  [" + std::to_string(i) + "] logical_time=" +
+                       std::to_string(entries[i].logical_time_);
+      }
+      if (entries.empty()) {
+        result_text += " (no entries since logical time " +
+                       std::to_string(min_time) + ")";
+      }
+      task->result_json_ = (protocol::json{
+          {"content", {{{"type","text"},{"text",result_text}}}},
+          {"isError", false},
+          {"entry_count", entries.size()}}).dump();
+    } catch (const std::exception& e) {
+      task->result_json_ = MakeErrorResult(std::string("poll_telemetry_log error: ") + e.what()).dump();
+      task->is_error_ = 1;
+    }
+    co_return;
+  }
+
+  // --- reorganize_blob (async) ---
+  if (tool_name == "reorganize_blob") {
+    if (!IsCteInitialized()) {
+      task->result_json_ = MakeErrorResult(
+          "CTE runtime not initialized — call cte__initialize_cte_runtime first").dump();
+      task->is_error_ = 1;
+      co_return;
+    }
+    try {
+      auto tag_name     = args.at("tag_name").get<std::string>();
+      auto blob_name    = args.at("blob_name").get<std::string>();
+      auto target_score = static_cast<float>(args.value("target_tier", 0.5));
+      auto tag_future = WRP_CTE_CLIENT->AsyncGetOrCreateTag(tag_name);
+      co_await tag_future;
+      auto tag_id = tag_future->tag_id_;
+      auto future = WRP_CTE_CLIENT->AsyncReorganizeBlob(tag_id, blob_name, target_score);
+      co_await future;
+      std::string tier;
+      if (target_score >= 0.8f) tier = "RAM";
+      else if (target_score >= 0.4f) tier = "SSD";
+      else tier = "archive";
+      task->result_json_ = MakeTextResult(
+          "Blob '" + blob_name + "' reorganized to " + tier +
+          " tier (score=" + std::to_string(target_score) + ")").dump();
+    } catch (const std::exception& e) {
+      task->result_json_ = MakeErrorResult(std::string("reorganize_blob error: ") + e.what()).dump();
+      task->is_error_ = 1;
+    }
+    co_return;
+  }
+
+  // --- Remaining tools (get_client_status, get_cte_types, initialize_cte_runtime):
+  //     no async CTE calls needed — use the synchronous registrar.
+  auto result = registrar_.Invoke(tool_name, args);
+  task->result_json_ = result.dump();
+  task->is_error_ = result.value("isError", false) ? 1 : 0;
+  co_return;
 }
 
 //=============================================================================
@@ -438,9 +817,9 @@ protocol::json Runtime::HandleTagQuery(const protocol::json& args) {
     future.Wait();
 
     std::string result_text = "Tags matching '" + pattern + "':";
-    auto& tags = future->tags_;
+    auto& tags = future->results_;
     for (size_t i = 0; i < tags.size(); ++i) {
-      result_text += "\n  - " + std::string(tags[i].str());
+      result_text += "\n  - " + tags[i];
     }
     if (tags.empty()) {
       result_text += " (none)";
@@ -476,11 +855,12 @@ protocol::json Runtime::HandleBlobQuery(const protocol::json& args) {
     std::string result_text =
         "Blobs matching tag='" + tag_pattern +
         "', blob='" + blob_pattern + "':";
-    auto& blobs = future->blobs_;
-    for (size_t i = 0; i < blobs.size(); ++i) {
-      result_text += "\n  - " + std::string(blobs[i].str());
+    auto& tag_names = future->tag_names_;
+    auto& blob_names = future->blob_names_;
+    for (size_t i = 0; i < tag_names.size(); ++i) {
+      result_text += "\n  - " + tag_names[i] + "/" + blob_names[i];
     }
-    if (blobs.empty()) {
+    if (tag_names.empty()) {
       result_text += " (none)";
     }
 
@@ -488,7 +868,7 @@ protocol::json Runtime::HandleBlobQuery(const protocol::json& args) {
     result["content"] = protocol::json::array();
     result["content"].push_back({{"type", "text"}, {"text", result_text}});
     result["isError"] = false;
-    result["blob_count"] = blobs.size();
+    result["blob_count"] = tag_names.size();
     return result;
   } catch (const std::exception& e) {
     return MakeErrorResult(std::string("blob_query error: ") + e.what());
@@ -509,10 +889,10 @@ protocol::json Runtime::HandlePollTelemetryLog(const protocol::json& args) {
     future.Wait();
 
     std::string result_text = "Telemetry log entries:";
-    auto& entries = future->log_entries_;
+    auto& entries = future->entries_;
     for (size_t i = 0; i < entries.size(); ++i) {
-      result_text += "\n  [" + std::to_string(i) + "] " +
-                     std::string(entries[i].str());
+      result_text += "\n  [" + std::to_string(i) + "] logical_time=" +
+                     std::to_string(entries[i].logical_time_);
     }
     if (entries.empty()) {
       result_text += " (no entries since logical time " +
@@ -574,7 +954,7 @@ protocol::json Runtime::HandleInitializeCteRuntime(
     }
 
     std::string config_path = args.value("config_path", "");
-    bool ok = WRP_CTE_CLIENT_INIT(config_path);
+    bool ok = wrp_cte::core::WRP_CTE_CLIENT_INIT(config_path);
 
     if (!ok) {
       return MakeErrorResult("Failed to initialize CTE runtime");

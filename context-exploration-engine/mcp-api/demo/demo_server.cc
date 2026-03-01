@@ -27,6 +27,8 @@
 #include <mchips/mcp_gateway/gateway_client.h>
 #include <mchips/mchip_cte/mchip_cte_client.h>
 #include <mchips/mchip_cae/mchip_cae_client.h>
+#include <wrp_cte/core/core_client.h>
+#include <wrp_cte/core/content_transfer_engine.h>
 #include <mchips/mchip_cluster/mchip_cluster_client.h>
 
 namespace {
@@ -85,18 +87,22 @@ int main(int argc, char* argv[]) {
             << "  threads: " << num_threads << "\n\n";
 
   // ── Initialize Chimaera runtime ──────────────────────────────────────────
-  // Set config path via environment (Chimaera reads CHIMAERA_CONF env var)
-  setenv("CHIMAERA_CONF", config_path.c_str(), /*overwrite=*/1);
+  // CHI_SERVER_CONF (not CHIMAERA_CONF) is the env var read by GetServerConfigPath().
+  // With the correct var, CHIMAERA_INIT processes the compose section in wrp_conf.yaml,
+  // which creates wrp_cte_core (pool 512) with RAM storage config via LoadConfig().
+  setenv("CHI_SERVER_CONF", config_path.c_str(), /*overwrite=*/1);
 
-  std::cout << "[1/5] Initializing Chimaera runtime...\n";
+  std::cout << "[1/5] Initializing Chimaera runtime (compose: bdev+CTE core)...\n";
   if (!chi::CHIMAERA_INIT(chi::ChimaeraMode::kRuntime, /*is_restart=*/false)) {
     std::cerr << "ERROR: Failed to initialize Chimaera runtime. "
               << "Ensure a config file exists at: " << config_path << "\n";
     return 1;
   }
-  std::cout << "      Chimaera runtime started.\n";
+  std::cout << "      Chimaera runtime started (wrp_cte_core pool 512 ready).\n";
 
   // ── Create CTE MChiP pool (701) ──────────────────────────────────────────
+  // Pools 700-703 are created manually (not via compose) so the gateway gets
+  // the correct port/threads from command-line args.
   std::cout << "[2/5] Creating CTE MChiP pool (701)...\n";
   {
     mchips::mchip_cte::Client cte_client;
@@ -135,21 +141,37 @@ int main(int argc, char* argv[]) {
   }
   std::cout << "      Cluster MChiP ready.\n";
 
-  // ── Create MCP Gateway pool (700) — discovers MChiPs and starts HTTP ─────
+  // ── Initialize CTE client directly (bypass WRP_CTE_CLIENT_INIT) ──────────
+  // WRP_CTE_CLIENT_INIT calls ClientInit which calls AsyncCreate for pool 512
+  // then Wait(). Pool 512 was already created by compose, so the admin returns
+  // "existing pool" but Wait() never unblocks — deadlock in the runtime process.
+  // Fix: directly connect g_cte_client to pool 512 and mark CTE initialized.
+  // IMPORTANT: do this BEFORE creating the gateway so CTE is ready before
+  //            the HTTP server starts accepting requests.
+  std::cout << "Initializing CTE client (pool 512, direct)...\n";
+  {
+    if (wrp_cte::core::g_cte_client == nullptr) {
+      wrp_cte::core::g_cte_client = new wrp_cte::core::Client();
+    }
+    wrp_cte::core::g_cte_client->Init(chi::PoolId(512, 0));
+    CTE_MANAGER->ForceSetInitialized(true);
+    std::cout << "      CTE client ready (pool_id=512, direct init).\n";
+  }
+
+  // ── Create MCP Gateway pool (700) — starts HTTP server in Create() ──────
   std::cout << "[5/5] Creating MCP Gateway pool (700) on "
             << host << ":" << port << "...\n";
   {
     mchips::mcp_gateway::Client gw_client;
+    // Pass port/threads in CreateParams so Create() starts HTTP on the right port
     auto create_task = gw_client.AsyncCreate(
         chi::PoolQuery::Broadcast(),
         "mcp_gateway",
-        chi::PoolId(700, 0));
+        chi::PoolId(700, 0),
+        mchips::mcp_gateway::CreateParams{port, num_threads});
     create_task.Wait();
     gw_client.Init(chi::PoolId(700, 0));
-
-    auto start_task = gw_client.AsyncStartHttpServer(
-        chi::PoolQuery::Broadcast(), host, port, num_threads);
-    start_task.Wait();
+    // HTTP server is started inside Create() — no AsyncStartHttpServer needed.
   }
 
   std::cout << "\nMChiPs gateway running at http://" << host << ":" << port

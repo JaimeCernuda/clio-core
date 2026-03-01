@@ -104,7 +104,7 @@ protocol::json Runtime::HandleClusterStatus(const protocol::json& /*args*/) {
     // This approximates what Chimaera exposes via Monitor API
     size_t num_workers = 0;
     if (CHI_WORK_ORCHESTRATOR) {
-      num_workers = CHI_WORK_ORCHESTRATOR->NumWorkers();
+      num_workers = CHI_WORK_ORCHESTRATOR->GetWorkerCount();
     }
     status["num_workers"] = num_workers;
 
@@ -188,7 +188,18 @@ protocol::json Runtime::HandlePoolStats(const protocol::json& args) {
       return MakeErrorResult("Chimaera runtime not available");
     }
 
-    std::string pool_id_str = args.value("pool_id", "");
+    // Accept pool_id as either a string ("701.0") or an integer (701)
+    std::string pool_id_str;
+    if (args.contains("pool_id")) {
+      auto& v = args["pool_id"];
+      if (v.is_string()) {
+        pool_id_str = v.get<std::string>();
+      } else if (v.is_number_integer()) {
+        pool_id_str = std::to_string(v.get<int64_t>()) + ".0";
+      } else if (v.is_number()) {
+        pool_id_str = std::to_string(v.get<double>());
+      }
+    }
     std::string pool_name = args.value("pool_name", "");
 
     if (pool_id_str.empty() && pool_name.empty()) {
