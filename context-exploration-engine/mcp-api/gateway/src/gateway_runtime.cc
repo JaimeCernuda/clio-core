@@ -32,6 +32,16 @@ std::string MakeSuccessResponse(const protocol::json& id,
   return protocol::JsonRpcResponse::Success(id, result).ToJson().dump();
 }
 
+/// Default page size for tools/list pagination.
+constexpr size_t kDefaultToolsPageSize = 100;
+
+/// LLM instructions string describing the MChiPs gateway.
+constexpr const char* kInstructions =
+    "MChiPs is a data-aware MCP gateway for scientific computing built on "
+    "IOWarp. Tools are namespaced as <mchip>__<tool> (e.g. cte__put_blob). "
+    "CTE tools manage data objects, CAE tools run analytics, and Cluster tools "
+    "handle distributed coordination.";
+
 }  // namespace
 
 //=============================================================================
@@ -65,7 +75,10 @@ chi::TaskResume Runtime::Create(hipc::FullPtr<CreateTask> task,
         future.Wait();
         std::string response_body(future->response_body_.str());
         auto http_status = static_cast<int>(future->http_status_);
-        return HttpResponse{http_status, response_body, "application/json"};
+        std::string resp_session_id(future->response_session_id_.str());
+        bool no_body = (future->no_body_ != 0);
+        return HttpResponse{http_status, response_body, "application/json",
+                            resp_session_id, no_body};
       });
 
   http_server_.SetDeleteHandler(
@@ -108,16 +121,16 @@ HttpResponse Runtime::HandleHttpRequestSync(const std::string& body,
     auto j = protocol::json::parse(body);
     auto msg = protocol::ParseMessage(j);
 
-    // Only handle requests (has id); notifications get empty 200
+    // Issue #4: Notifications get 202 Accepted, no body
     if (std::holds_alternative<protocol::JsonRpcNotification>(msg)) {
-      return HttpResponse{200, "{}", "application/json"};
+      return HttpResponse{202, "", "application/json", "", true};
     }
     if (!std::holds_alternative<protocol::JsonRpcRequest>(msg)) {
       return HttpResponse{
           400,
           MakeErrorResponse(nullptr, protocol::McpErrorCode::InvalidRequest,
                             "Invalid request"),
-          "application/json"};
+          "application/json", "", false};
     }
 
     const auto& req = std::get<protocol::JsonRpcRequest>(msg);
@@ -127,11 +140,12 @@ HttpResponse Runtime::HandleHttpRequestSync(const std::string& body,
     // Validate session for all methods except initialize
     if (method != protocol::methods::kInitialize) {
       if (!session_id.empty() && !session_manager_.ValidateSession(session_id)) {
+        // Issue #2: HTTP 404 (not 401) for expired/unknown sessions
         return HttpResponse{
-            401,
+            404,
             MakeErrorResponse(id, protocol::McpErrorCode::SessionNotFound,
                               "Session not found or expired"),
-            "application/json"};
+            "application/json", "", false};
       }
     }
 
@@ -144,13 +158,13 @@ HttpResponse Runtime::HandleHttpRequestSync(const std::string& body,
       return HandleToolsCallSync(req);
     } else if (method == protocol::methods::kPing) {
       auto resp = MakeSuccessResponse(id, protocol::json::object());
-      return HttpResponse{200, resp, "application/json"};
+      return HttpResponse{200, resp, "application/json", "", false};
     } else {
       return HttpResponse{
           404,
           MakeErrorResponse(id, protocol::McpErrorCode::MethodNotFound,
                             "Method not found: " + method),
-          "application/json"};
+          "application/json", "", false};
     }
 
   } catch (const protocol::json::parse_error& e) {
@@ -158,13 +172,13 @@ HttpResponse Runtime::HandleHttpRequestSync(const std::string& body,
         400,
         MakeErrorResponse(id, protocol::McpErrorCode::ParseError,
                           std::string("Parse error: ") + e.what()),
-        "application/json"};
+        "application/json", "", false};
   } catch (const std::exception& e) {
     return HttpResponse{
         500,
         MakeErrorResponse(id, protocol::McpErrorCode::InternalError,
                           std::string("Internal error: ") + e.what()),
-        "application/json"};
+        "application/json", "", false};
   }
 }
 
@@ -182,22 +196,19 @@ HttpResponse Runtime::HandleInitializeSync(
   protocol::ServerCapabilities::ToolsCapability tools_cap;
   tools_cap.listChanged = true;
   result.capabilities.tools = tools_cap;
+  // Issue #10: Include instructions LLM hint
+  result.instructions = kInstructions;
 
   auto response_json = MakeSuccessResponse(req.id, result.ToJson());
 
-  // Return with session ID header embedded in body for simplicity
-  // (clients must also check MCP-Session-Id response header)
-  protocol::json resp_with_session = protocol::json::parse(response_json);
-  resp_with_session["sessionId"] = session_id;
-
-  return HttpResponse{200, resp_with_session.dump(), "application/json"};
+  // Issue #1: Set session_id in HttpResponse so http_server sets the header
+  return HttpResponse{200, response_json, "application/json", session_id, false};
 }
 
 /// Handle tools/list — aggregate from all registered MChiPs.
 ///
-/// RefreshTools is called once on the first tools/list request.  Running on
-/// the httplib thread pool is safe: we can block via .Wait() here without
-/// interfering with Chimaera worker coroutines.
+/// Issue #8: Support cursor-based pagination.
+/// Cursor is a stringified integer offset. Default page size = 100.
 HttpResponse Runtime::HandleToolsListSync(
     const protocol::JsonRpcRequest& req) {
   if (!tools_refreshed_.load(std::memory_order_acquire)) {
@@ -206,22 +217,44 @@ HttpResponse Runtime::HandleToolsListSync(
   }
   auto all_tools = router_.ListAllTools();
 
+  // Parse optional cursor (stringified offset)
+  size_t offset = 0;
+  if (req.params.has_value() && req.params->contains("cursor")) {
+    try {
+      offset = std::stoul((*req.params)["cursor"].get<std::string>());
+    } catch (...) {
+      offset = 0;
+    }
+  }
+
+  // Clamp offset
+  if (offset > all_tools.size()) {
+    offset = all_tools.size();
+  }
+
+  size_t end = std::min(offset + kDefaultToolsPageSize, all_tools.size());
+
   protocol::json tools_arr = protocol::json::array();
-  for (const auto& tool : all_tools) {
-    tools_arr.push_back(tool.ToJson());
+  for (size_t i = offset; i < end; ++i) {
+    tools_arr.push_back(all_tools[i].ToJson());
   }
 
   protocol::json result;
   result["tools"] = tools_arr;
 
+  // Include nextCursor if there are more tools
+  if (end < all_tools.size()) {
+    result["nextCursor"] = std::to_string(end);
+  }
+
   return HttpResponse{200, MakeSuccessResponse(req.id, result),
-                      "application/json"};
+                      "application/json", "", false};
 }
 
 /// Handle tools/call — route to the appropriate MChiP.
 ///
-/// For Stage 1 (no Chimaera): returns "runtime not available" error.
-/// For Stage 2 (Chimaera integrated): submits CallMcpToolTask.
+/// Issue #9: Tool-not-found returns 200 with isError:true content
+/// instead of a JSON-RPC error.
 HttpResponse Runtime::HandleToolsCallSync(
     const protocol::JsonRpcRequest& req) {
   if (!req.params.has_value()) {
@@ -229,7 +262,7 @@ HttpResponse Runtime::HandleToolsCallSync(
         400,
         MakeErrorResponse(req.id, protocol::McpErrorCode::InvalidParams,
                           "Missing params for tools/call"),
-        "application/json"};
+        "application/json", "", false};
   }
 
   const auto& params = *req.params;
@@ -238,7 +271,7 @@ HttpResponse Runtime::HandleToolsCallSync(
         400,
         MakeErrorResponse(req.id, protocol::McpErrorCode::InvalidParams,
                           "Missing 'name' in tools/call"),
-        "application/json"};
+        "application/json", "", false};
   }
 
   auto qualified_name = params["name"].get<std::string>();
@@ -246,11 +279,16 @@ HttpResponse Runtime::HandleToolsCallSync(
   auto* route = router_.Route(qualified_name, tool_name);
 
   if (!route) {
-    return HttpResponse{
-        404,
-        MakeErrorResponse(req.id, protocol::McpErrorCode::ToolNotFound,
-                          "Tool not found: " + qualified_name),
-        "application/json"};
+    // Issue #9: Return 200 with isError content, not JSON-RPC error
+    protocol::json error_result;
+    error_result["content"] = protocol::json::array();
+    error_result["content"].push_back({
+        {"type", "text"},
+        {"text", "Tool not found: " + qualified_name}
+    });
+    error_result["isError"] = true;
+    return HttpResponse{200, MakeSuccessResponse(req.id, error_result),
+                        "application/json", "", false};
   }
 
   protocol::json args = protocol::json::object();
@@ -268,7 +306,7 @@ HttpResponse Runtime::HandleToolsCallSync(
     auto result_str = future->result_json_.str();
     auto result_json = protocol::json::parse(result_str);
     return HttpResponse{200, MakeSuccessResponse(req.id, result_json),
-                        "application/json"};
+                        "application/json", "", false};
   } catch (const std::exception& e) {
     protocol::json error_result;
     error_result["content"] = protocol::json::array();
@@ -278,7 +316,7 @@ HttpResponse Runtime::HandleToolsCallSync(
     });
     error_result["isError"] = true;
     return HttpResponse{200, MakeSuccessResponse(req.id, error_result),
-                        "application/json"};
+                        "application/json", "", false};
   }
 }
 
@@ -287,7 +325,7 @@ HttpResponse Runtime::HandleDeleteSync(const std::string& session_id) {
   if (!session_id.empty()) {
     session_manager_.DestroySession(session_id);
   }
-  return HttpResponse{200, "{}", "application/json"};
+  return HttpResponse{200, "{}", "application/json", "", false};
 }
 
 //=============================================================================
@@ -307,10 +345,11 @@ chi::TaskResume Runtime::HandleHttpRequest(
     auto j = protocol::json::parse(body);
     auto msg = protocol::ParseMessage(j);
 
-    // Notifications: empty 200
+    // Issue #4: Notifications → 202 Accepted, no body
     if (std::holds_alternative<protocol::JsonRpcNotification>(msg)) {
-      task->response_body_ = chi::priv::string(HSHM_MALLOC, "{}");
-      task->http_status_ = 200;
+      task->response_body_ = chi::priv::string(HSHM_MALLOC, "");
+      task->http_status_ = 202;
+      task->no_body_ = 1;
       task->return_code_ = 0;
       co_return;
     }
@@ -331,10 +370,11 @@ chi::TaskResume Runtime::HandleHttpRequest(
     if (method != protocol::methods::kInitialize) {
       if (!session_id.empty() &&
           !session_manager_.ValidateSession(session_id)) {
+        // Issue #2: HTTP 404 (not 401) for expired/unknown sessions
         task->response_body_ = chi::priv::string(HSHM_MALLOC,
             MakeErrorResponse(id, protocol::McpErrorCode::SessionNotFound,
                               "Session not found or expired"));
-        task->http_status_ = 401;
+        task->http_status_ = 404;
         task->return_code_ = 0;
         co_return;
       }
@@ -343,10 +383,27 @@ chi::TaskResume Runtime::HandleHttpRequest(
     // ---- Dispatch by method ----
     if (method == protocol::methods::kInitialize) {
       stats_.init_requests.fetch_add(1, std::memory_order_relaxed);
+
       // Initialize: inline (no sub-tasks needed)
-      auto resp = HandleInitializeSync(req);
-      task->response_body_ = chi::priv::string(HSHM_MALLOC, resp.body);
-      task->http_status_ = static_cast<chi::u32>(resp.status_code);
+      std::string protocol_version = protocol::kMcpProtocolVersion;
+      if (req.params.has_value() && req.params->contains("protocolVersion")) {
+        protocol_version = (*req.params)["protocolVersion"].get<std::string>();
+      }
+
+      auto new_session_id = session_manager_.CreateSession(protocol_version);
+
+      protocol::InitializeResult result;
+      protocol::ServerCapabilities::ToolsCapability tools_cap;
+      tools_cap.listChanged = true;
+      result.capabilities.tools = tools_cap;
+      // Issue #10: Include instructions LLM hint
+      result.instructions = kInstructions;
+
+      task->response_body_ = chi::priv::string(HSHM_MALLOC,
+          MakeSuccessResponse(req.id, result.ToJson()));
+      task->http_status_ = 200;
+      // Issue #1: Propagate session ID for Mcp-Session-Id header
+      task->response_session_id_ = chi::priv::string(HSHM_MALLOC, new_session_id);
 
     } else if (method == protocol::methods::kToolsList) {
       stats_.list_requests.fetch_add(1, std::memory_order_relaxed);
@@ -372,12 +429,31 @@ chi::TaskResume Runtime::HandleHttpRequest(
       }
 
       auto all_tools = router_.ListAllTools();
+
+      // Issue #8: Support cursor-based pagination
+      size_t offset = 0;
+      if (req.params.has_value() && req.params->contains("cursor")) {
+        try {
+          offset = std::stoul((*req.params)["cursor"].get<std::string>());
+        } catch (...) {
+          offset = 0;
+        }
+      }
+      if (offset > all_tools.size()) {
+        offset = all_tools.size();
+      }
+      size_t end = std::min(offset + kDefaultToolsPageSize, all_tools.size());
+
       protocol::json tools_arr = protocol::json::array();
-      for (const auto& tool : all_tools) {
-        tools_arr.push_back(tool.ToJson());
+      for (size_t i = offset; i < end; ++i) {
+        tools_arr.push_back(all_tools[i].ToJson());
       }
       protocol::json result;
       result["tools"] = tools_arr;
+      if (end < all_tools.size()) {
+        result["nextCursor"] = std::to_string(end);
+      }
+
       task->response_body_ = chi::priv::string(HSHM_MALLOC,
           MakeSuccessResponse(req.id, result));
       task->http_status_ = 200;
@@ -408,10 +484,17 @@ chi::TaskResume Runtime::HandleHttpRequest(
       auto* route = router_.Route(qualified_name, tool_name);
 
       if (!route) {
+        // Issue #9: Return 200 with isError content, not JSON-RPC error
+        protocol::json error_result;
+        error_result["content"] = protocol::json::array();
+        error_result["content"].push_back({
+            {"type", "text"},
+            {"text", "Tool not found: " + qualified_name}
+        });
+        error_result["isError"] = true;
         task->response_body_ = chi::priv::string(HSHM_MALLOC,
-            MakeErrorResponse(req.id, protocol::McpErrorCode::ToolNotFound,
-                              "Tool not found: " + qualified_name));
-        task->http_status_ = 404;
+            MakeSuccessResponse(req.id, error_result));
+        task->http_status_ = 200;
         task->return_code_ = 0;
         co_return;
       }
@@ -506,6 +589,7 @@ chi::TaskResume Runtime::InitializeSession(
   protocol::ServerCapabilities::ToolsCapability tc;
   tc.listChanged = true;
   result.capabilities.tools = tc;
+  result.instructions = kInstructions;
 
   task->response_json_ = chi::priv::string(HSHM_MALLOC, result.ToJson().dump());
   task->session_id_ = chi::priv::string(HSHM_MALLOC, session_id);

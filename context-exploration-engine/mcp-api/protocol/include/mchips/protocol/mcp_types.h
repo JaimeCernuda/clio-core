@@ -97,6 +97,7 @@ struct InitializeResult {
   std::string protocolVersion = kMcpProtocolVersion;
   ServerCapabilities capabilities;
   ServerInfo serverInfo;
+  std::optional<std::string> instructions;  ///< Optional LLM hint string
 
   json ToJson() const;
   static InitializeResult FromJson(const json& j);

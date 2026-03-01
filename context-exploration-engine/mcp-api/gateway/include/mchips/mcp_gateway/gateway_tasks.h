@@ -59,10 +59,12 @@ using CreateTask = chimaera::admin::GetOrCreatePoolTask<CreateParams>;
 /// A Chimaera worker picks it up, parses JSON-RPC, routes to the
 /// appropriate MChiP, and writes the response.
 struct HandleHttpRequestTask : public chi::Task {
-  IN chi::priv::string request_body_;   ///< Raw HTTP request body (JSON-RPC)
-  IN chi::priv::string session_id_;     ///< MCP-Session-Id header value
-  OUT chi::priv::string response_body_; ///< JSON-RPC response to send back
-  OUT chi::u32 http_status_;            ///< HTTP status code (200, 400, etc.)
+  IN chi::priv::string request_body_;          ///< Raw HTTP request body (JSON-RPC)
+  IN chi::priv::string session_id_;            ///< MCP-Session-Id header value
+  OUT chi::priv::string response_body_;        ///< JSON-RPC response to send back
+  OUT chi::u32 http_status_;                   ///< HTTP status code (200, 400, etc.)
+  OUT chi::priv::string response_session_id_;  ///< Session ID for Mcp-Session-Id response header
+  OUT chi::u32 no_body_;                       ///< If 1, send no response body (202)
 
   /** SHM default constructor. */
   HandleHttpRequestTask()
@@ -70,7 +72,9 @@ struct HandleHttpRequestTask : public chi::Task {
         request_body_(HSHM_MALLOC),
         session_id_(HSHM_MALLOC),
         response_body_(HSHM_MALLOC),
-        http_status_(200) {}
+        http_status_(200),
+        response_session_id_(HSHM_MALLOC),
+        no_body_(0) {}
 
   /** Emplace constructor. */
   explicit HandleHttpRequestTask(
@@ -84,7 +88,9 @@ struct HandleHttpRequestTask : public chi::Task {
         request_body_(HSHM_MALLOC, request_body),
         session_id_(HSHM_MALLOC, session_id),
         response_body_(HSHM_MALLOC),
-        http_status_(200) {
+        http_status_(200),
+        response_session_id_(HSHM_MALLOC),
+        no_body_(0) {
     task_id_ = task_node;
     pool_id_ = pool_id;
     method_ = Method::kHandleHttpRequest;
@@ -103,7 +109,7 @@ struct HandleHttpRequestTask : public chi::Task {
   template <typename Archive>
   void SerializeOut(Archive& ar) {
     Task::SerializeOut(ar);
-    ar(response_body_, http_status_);
+    ar(response_body_, http_status_, response_session_id_, no_body_);
   }
 
   void Copy(const hipc::FullPtr<HandleHttpRequestTask>& other) {
@@ -112,6 +118,8 @@ struct HandleHttpRequestTask : public chi::Task {
     session_id_ = other->session_id_;
     response_body_ = other->response_body_;
     http_status_ = other->http_status_;
+    response_session_id_ = other->response_session_id_;
+    no_body_ = other->no_body_;
   }
 
   void Aggregate(const hipc::FullPtr<chi::Task>& other_base) {

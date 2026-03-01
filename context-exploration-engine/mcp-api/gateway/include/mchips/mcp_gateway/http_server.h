@@ -12,6 +12,7 @@
 #include <functional>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace mchips::mcp_gateway {
 
@@ -20,6 +21,8 @@ struct HttpResponse {
   int status_code;
   std::string body;
   std::string content_type;
+  std::string session_id;  ///< If non-empty, set as Mcp-Session-Id response header
+  bool no_body = false;    ///< If true, send no response body (e.g. 202 Accepted)
 };
 
 /// HTTP server wrapper around cpp-httplib.
@@ -57,6 +60,10 @@ class HttpServer {
   /// Register the DELETE /mcp session-close handler.
   void SetDeleteHandler(DeleteHandler handler);
 
+  /// Set allowed Origin values for CORS/security validation.
+  /// Empty list (default) = accept all origins (suitable for trusted networks).
+  void SetAllowedOrigins(std::vector<std::string> origins);
+
   /// Start listening on the given address and port.
   ///
   /// Spawns a background thread. Returns after the server is ready.
@@ -66,10 +73,14 @@ class HttpServer {
   void Stop();
 
  private:
+  /// Check whether the given Origin header value is allowed.
+  bool IsOriginAllowed(const std::string& origin) const;
+
   httplib::Server server_;
   std::thread server_thread_;
   RequestHandler request_handler_;
   DeleteHandler delete_handler_;
+  std::vector<std::string> allowed_origins_;  ///< Empty = accept all
 };
 
 }  // namespace mchips::mcp_gateway

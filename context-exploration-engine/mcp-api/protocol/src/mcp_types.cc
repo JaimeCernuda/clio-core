@@ -208,6 +208,9 @@ json InitializeResult::ToJson() const {
   j["protocolVersion"] = protocolVersion;
   j["capabilities"] = capabilities.ToJson();
   j["serverInfo"] = serverInfo.ToJson();
+  if (instructions.has_value()) {
+    j["instructions"] = *instructions;
+  }
   return j;
 }
 
@@ -220,6 +223,9 @@ InitializeResult InitializeResult::FromJson(const json& j) {
   }
   if (j.contains("serverInfo")) {
     result.serverInfo = ServerInfo::FromJson(j["serverInfo"]);
+  }
+  if (j.contains("instructions") && !j["instructions"].is_null()) {
+    result.instructions = j["instructions"].get<std::string>();
   }
   return result;
 }

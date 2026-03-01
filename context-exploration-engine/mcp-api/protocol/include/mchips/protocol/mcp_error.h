@@ -20,11 +20,11 @@ enum class McpErrorCode : int {
   InvalidParams = -32602,
   InternalError = -32603,
 
-  // MCP-specific errors
-  SessionNotFound = -32000,
-  SessionExpired = -32001,
-  ToolNotFound = -32002,
-  ToolExecutionError = -32003,
+  // MCP-specific errors (avoid -32000..-32009 which overlap spec-reserved codes)
+  SessionNotFound = -32010,
+  SessionExpired = -32011,
+  ToolNotFound = -32012,
+  ToolExecutionError = -32013,
   ElicitationError = -32042,
 };
 
