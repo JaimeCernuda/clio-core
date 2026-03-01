@@ -61,10 +61,7 @@ bool SessionManager::ValidateSession(const std::string& session_id) {
   }
 
   auto now = std::chrono::steady_clock::now();
-  auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
-      now - it->second.last_active);
-
-  if (elapsed > timeout_) {
+  if ((now - it->second.last_active) > timeout_) {
     return false;
   }
 
@@ -89,9 +86,7 @@ void SessionManager::CleanupExpired() {
   auto now = std::chrono::steady_clock::now();
   std::unique_lock lock(mutex_);
   for (auto it = sessions_.begin(); it != sessions_.end();) {
-    auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
-        now - it->second.last_active);
-    if (elapsed > timeout_) {
+    if ((now - it->second.last_active) > timeout_) {
       it = sessions_.erase(it);
     } else {
       ++it;

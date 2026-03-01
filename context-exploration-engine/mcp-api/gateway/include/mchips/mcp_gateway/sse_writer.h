@@ -11,12 +11,13 @@
 
 namespace mchips::mcp_gateway {
 
-/// Formats and writes Server-Sent Events for streaming MCP responses.
+/// Formats Server-Sent Events for optional streaming in MCP responses.
 ///
-/// MCP uses SSE for:
-///   - Streaming tool call results (large outputs)
-///   - Server-to-client notifications (progress, logging)
-///   - Reconnection via Last-Event-Id header
+/// In the Streamable HTTP transport, POST responses MAY use SSE format
+/// (Content-Type: text/event-stream) for streaming large results or
+/// server-initiated notifications. This is the response FORMAT, not
+/// the deprecated SSE transport (which used separate /sse + /messages
+/// endpoints).
 ///
 /// Event format:
 ///   event: message\n

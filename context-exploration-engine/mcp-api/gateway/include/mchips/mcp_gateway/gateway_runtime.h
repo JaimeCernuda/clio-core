@@ -9,6 +9,8 @@
 
 #include <chimaera/container.h>
 
+#include <mutex>
+
 #include <mchips/protocol/json_rpc.h>
 #include <mchips/mcp_gateway/gateway_client.h>
 #include <mchips/mcp_gateway/gateway_tasks.h>
@@ -57,7 +59,7 @@ class Runtime : public chi::Container {
 
   chi::TaskResume Create(hipc::FullPtr<CreateTask> task,
                          chi::RunContext& rctx);
-  chi::TaskResume Destroy(hipc::FullPtr<chi::admin::DestroyPoolTask> task,
+  chi::TaskResume Destroy(hipc::FullPtr<chimaera::admin::DestroyPoolTask> task,
                           chi::RunContext& rctx);
   chi::TaskResume HandleHttpRequest(hipc::FullPtr<HandleHttpRequestTask> task,
                                     chi::RunContext& rctx);
@@ -102,6 +104,7 @@ class Runtime : public chi::Container {
   SessionManager session_manager_;
   SseWriter sse_writer_;
   MchipRouter router_;
+  std::once_flag tools_refresh_flag_;  ///< Ensures RefreshTools runs once
 
   // Synchronous dispatch helpers (called from httplib thread pool)
   HttpResponse HandleHttpRequestSync(const std::string& body,

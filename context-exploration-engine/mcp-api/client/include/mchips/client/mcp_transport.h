@@ -18,12 +18,13 @@ namespace mchips::client {
 
 /// Streamable HTTP transport for MCP client.
 ///
-/// Implements the MCP Streamable HTTP transport specification:
-///   POST /mcp   — send JSON-RPC request, receive response
-///   GET  /mcp   — open SSE stream for server notifications
+/// Implements the MCP Streamable HTTP transport (2025-11-25 spec):
+///   POST /mcp   — send JSON-RPC request, receive response (JSON or SSE format)
 ///   DELETE /mcp — close session
 ///
-/// Manages MCP-Session-Id and MCP-Protocol-Version headers.
+/// Handles both plain JSON and SSE-formatted POST responses (servers may
+/// use either Content-Type). Manages MCP-Session-Id and
+/// MCP-Protocol-Version headers automatically.
 class McpTransport {
  public:
   explicit McpTransport(const std::string& base_url);

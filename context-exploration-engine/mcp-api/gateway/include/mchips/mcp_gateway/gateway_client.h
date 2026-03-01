@@ -7,7 +7,7 @@
 #ifndef MCHIPS_MCP_GATEWAY_GATEWAY_CLIENT_H_
 #define MCHIPS_MCP_GATEWAY_GATEWAY_CLIENT_H_
 
-#include <chimaera/container_client.h>
+#include <chimaera/container.h>
 
 #include <mchips/mcp_gateway/gateway_tasks.h>
 
@@ -26,7 +26,8 @@ class Client : public chi::ContainerClient {
   /// Create the gateway pool (async).
   chi::Future<CreateTask> AsyncCreate(const chi::PoolQuery& pool_query,
                                       const std::string& pool_name,
-                                      const chi::PoolId& custom_pool_id) {
+                                      const chi::PoolId& custom_pool_id,
+                                      CreateParams params = CreateParams{}) {
     auto* ipc_manager = CHI_IPC;
     auto task = ipc_manager->NewTask<CreateTask>(
         chi::CreateTaskId(),
@@ -35,7 +36,8 @@ class Client : public chi::ContainerClient {
         CreateParams::chimod_lib_name,
         pool_name,
         custom_pool_id,
-        this);
+        this,
+        std::move(params));
     return ipc_manager->Send(task);
   }
 

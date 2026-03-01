@@ -10,6 +10,7 @@
 #include <mchips/sdk/mchip_client.h>
 #include <mchips/protocol/mcp_types.h>
 
+#include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -61,10 +62,24 @@ class MchipRouter {
 
   /// Refresh tool lists from all registered MChiPs.
   ///
-  /// Sends ListMcpTools to each MChiP and rebuilds the aggregated
-  /// tool table with qualified names (mchip__tool).
-  // TODO(Phase B.4): Implement async refresh with co_await
-  // void RefreshTools();
+  /// Sends ListMcpTools to each MChiP and updates the cached tool table.
+  /// Blocks until all MChiPs respond. Called from the gateway Create() coroutine.
+  void RefreshTools() {
+    for (auto& [name, route] : routes_) {
+      try {
+        auto future = route.client.AsyncListMcpTools(chi::PoolQuery::Local());
+        future.Wait();
+        auto json_str = future->result_json_.str();
+        auto tools_json = protocol::json::parse(json_str);
+        route.tools.clear();
+        for (const auto& tool_json : tools_json) {
+          route.tools.push_back(protocol::ToolDefinition::FromJson(tool_json));
+        }
+      } catch (const std::exception&) {
+        // Leave tools empty if MChiP doesn't respond
+      }
+    }
+  }
 
   /// Route a qualified tool name to the right MChiP.
   ///

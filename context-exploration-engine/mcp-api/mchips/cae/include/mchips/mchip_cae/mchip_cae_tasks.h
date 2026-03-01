@@ -17,6 +17,7 @@ namespace mchips::mchip_cae {
 struct CreateParams {
   static constexpr const char* chimod_lib_name = "mchips_mchip_cae";
   CreateParams() = default;
+  void LoadConfig(const chi::PoolConfig& /*pool_config*/) {}
   template <class Archive>
   void serialize(Archive& ar) { (void)ar; }
 };

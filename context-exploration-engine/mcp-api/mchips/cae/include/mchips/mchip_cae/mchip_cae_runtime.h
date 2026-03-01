@@ -32,7 +32,7 @@ class Runtime : public sdk::MchipBase {
                       chi::RunContext& rctx) override;
 
   chi::TaskResume Create(hipc::FullPtr<CreateTask> task, chi::RunContext& rctx);
-  chi::TaskResume Destroy(hipc::FullPtr<chi::admin::DestroyPoolTask> task,
+  chi::TaskResume Destroy(hipc::FullPtr<chimaera::admin::DestroyPoolTask> task,
                           chi::RunContext& rctx);
 
   chi::u64 GetWorkRemaining() const override;

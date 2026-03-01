@@ -7,7 +7,7 @@
 #ifndef MCHIPS_MCHIP_CAE_CLIENT_H_
 #define MCHIPS_MCHIP_CAE_CLIENT_H_
 
-#include <chimaera/container_client.h>
+#include <chimaera/container.h>
 
 #include <mchips/mchip_cae/mchip_cae_tasks.h>
 #include <mchips/sdk/mchip_client.h>

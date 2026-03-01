@@ -48,6 +48,21 @@ install(TARGETS mchips_sdk
   INCLUDES DESTINATION include
 )
 
+# Also register in each consumer ChiMod export set so CMake's transitive
+# dependency validation does not error on "target mchips_sdk not in any
+# export set" when the MChiP clients/runtimes are installed.
+foreach(_mchip_export
+    mchips_mcp_gateway
+    mchips_mchip_cte
+    mchips_mchip_cae
+    mchips_mchip_cluster)
+  install(TARGETS mchips_sdk
+    EXPORT ${_mchip_export}
+    LIBRARY DESTINATION lib
+    ARCHIVE DESTINATION lib
+  )
+endforeach()
+
 install(DIRECTORY include/
   DESTINATION include
   FILES_MATCHING PATTERN "*.h"

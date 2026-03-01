@@ -24,10 +24,13 @@ struct HttpResponse {
 
 /// HTTP server wrapper around cpp-httplib.
 ///
-/// Handles the MCP Streamable HTTP transport:
-///   POST /mcp   — JSON-RPC requests (tools/call, tools/list, initialize, etc.)
-///   GET  /mcp   — SSE stream for server-to-client notifications
-///   DELETE /mcp  — Close session
+/// Implements the MCP Streamable HTTP transport (2025-11-25 spec):
+///   POST /mcp   — JSON-RPC requests and responses (tools/call, tools/list, etc.)
+///   DELETE /mcp  — Session teardown
+///
+/// The POST endpoint is the primary communication channel. Responses are
+/// plain JSON (Content-Type: application/json). Server-initiated streaming
+/// can optionally use SSE format in POST responses when needed.
 ///
 /// Threading: httplib runs its own thread pool. Each POST handler submits a
 /// Chimaera task (via the request callback) and blocks on Future::Wait().

@@ -7,7 +7,7 @@
 #ifndef MCHIPS_MCHIP_CLUSTER_CLIENT_H_
 #define MCHIPS_MCHIP_CLUSTER_CLIENT_H_
 
-#include <chimaera/container_client.h>
+#include <chimaera/container.h>
 
 #include <mchips/mchip_cluster/mchip_cluster_tasks.h>
 #include <mchips/sdk/mchip_client.h>

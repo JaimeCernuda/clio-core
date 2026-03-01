@@ -7,7 +7,7 @@
 #ifndef MCHIPS_SDK_MCHIP_CLIENT_H_
 #define MCHIPS_SDK_MCHIP_CLIENT_H_
 
-#include <chimaera/container_client.h>
+#include <chimaera/container.h>
 
 #include <mchips/sdk/mchip_tasks.h>
 

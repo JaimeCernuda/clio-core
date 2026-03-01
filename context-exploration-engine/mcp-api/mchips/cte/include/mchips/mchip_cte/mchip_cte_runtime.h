@@ -38,8 +38,16 @@ class Runtime : public sdk::MchipBase {
 
   chi::TaskResume Create(hipc::FullPtr<CreateTask> task,
                          chi::RunContext& rctx);
-  chi::TaskResume Destroy(hipc::FullPtr<chi::admin::DestroyPoolTask> task,
+  chi::TaskResume Destroy(hipc::FullPtr<chimaera::admin::DestroyPoolTask> task,
                           chi::RunContext& rctx);
+
+  /// Override CallMcpTool to use co_await for async CTE operations.
+  ///
+  /// Data-plane tools (put_blob, get_blob, etc.) submit tasks to pool 512
+  /// (wrp_cte_core). Using co_await allows the Chimaera worker to continue
+  /// processing other tasks while waiting — avoiding deadlock.
+  chi::TaskResume CallMcpTool(hipc::FullPtr<sdk::CallMcpToolTask> task,
+                               chi::RunContext& rctx);
 
   chi::u64 GetWorkRemaining() const override;
 

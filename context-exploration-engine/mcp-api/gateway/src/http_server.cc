@@ -5,7 +5,6 @@
  */
 
 #include "mchips/mcp_gateway/http_server.h"
-#include "mchips/mcp_gateway/sse_writer.h"
 
 namespace mchips::mcp_gateway {
 
@@ -50,19 +49,7 @@ void HttpServer::Start(const std::string& host, int port, int num_threads) {
     }
   });
 
-  // GET /mcp — SSE stream for server-to-client notifications
-  server_.Get("/mcp", [](const httplib::Request& /*req*/,
-                          httplib::Response& res) {
-    res.status = 200;
-    res.set_header("Content-Type", "text/event-stream");
-    res.set_header("Cache-Control", "no-cache");
-    res.set_header("Connection", "keep-alive");
-    // Minimal SSE response: send a keep-alive comment
-    SseWriter writer;
-    res.set_content(writer.FormatKeepAlive(), "text/event-stream");
-  });
-
-  // DELETE /mcp — close session
+  // DELETE /mcp — session teardown (Streamable HTTP spec)
   server_.Delete("/mcp", [this](const httplib::Request& req,
                                  httplib::Response& res) {
     std::string session_id;

@@ -52,7 +52,5 @@ if(WRP_CORE_ENABLE_PYTHON)
   add_subdirectory(bindings)
 endif()
 
-# Demo programs
-if(BUILD_TESTING)
-  add_subdirectory(demo)
-endif()
+# Demo programs (always built)
+add_subdirectory(demo)

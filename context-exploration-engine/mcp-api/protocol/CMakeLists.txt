@@ -26,7 +26,10 @@ target_include_directories(mchips_protocol
 
 target_link_libraries(mchips_protocol
   PUBLIC
-    nlohmann_json::nlohmann_json
+    # BUILD_INTERFACE only: nlohmann_json is a FetchContent/header-only dep.
+    # It cannot be part of an INSTALL export set. Installed consumers must
+    # find nlohmann_json themselves (any compatible version works).
+    $<BUILD_INTERFACE:nlohmann_json::nlohmann_json>
 )
 
 set_target_properties(mchips_protocol PROPERTIES
@@ -46,6 +49,21 @@ install(TARGETS mchips_protocol
   RUNTIME DESTINATION bin
   INCLUDES DESTINATION include
 )
+
+# Also register in each consumer ChiMod export set so CMake's transitive
+# dependency validation does not error on "target mchips_protocol not in any
+# export set" when the MChiP clients/runtimes are installed.
+foreach(_mchip_export
+    mchips_mcp_gateway
+    mchips_mchip_cte
+    mchips_mchip_cae
+    mchips_mchip_cluster)
+  install(TARGETS mchips_protocol
+    EXPORT ${_mchip_export}
+    LIBRARY DESTINATION lib
+    ARCHIVE DESTINATION lib
+  )
+endforeach()
 
 install(DIRECTORY include/
   DESTINATION include

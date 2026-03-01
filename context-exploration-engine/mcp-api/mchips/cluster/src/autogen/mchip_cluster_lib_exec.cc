@@ -45,7 +45,7 @@ chi::TaskResume Runtime::Create(hipc::FullPtr<CreateTask> task,
   co_return;
 }
 
-chi::TaskResume Runtime::Destroy(hipc::FullPtr<chi::admin::DestroyPoolTask> task,
+chi::TaskResume Runtime::Destroy(hipc::FullPtr<chimaera::admin::DestroyPoolTask> task,
                                  chi::RunContext& rctx) {
   (void)task; (void)rctx;
   co_return;

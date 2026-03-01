@@ -8,6 +8,7 @@
 #include "mchips/mcp_gateway/gateway_tasks.h"
 
 #include <mchips/protocol/json_rpc.h>
+#include <mchips/protocol/mcp_error.h>
 #include <mchips/protocol/mcp_message.h>
 #include <mchips/protocol/mcp_types.h>
 
@@ -18,11 +19,10 @@ namespace mchips::mcp_gateway {
 namespace {
 
 /// Build a JSON-RPC error response (as a JSON string).
-std::string MakeErrorResponse(const protocol::json& id, int code,
+std::string MakeErrorResponse(const protocol::json& id,
+                               protocol::McpErrorCode code,
                                const std::string& message) {
-  protocol::JsonRpcError err;
-  err.code = code;
-  err.message = message;
+  auto err = protocol::MakeError(code, message);
   return protocol::JsonRpcResponse::Error(id, err).ToJson().dump();
 }
 
@@ -48,7 +48,9 @@ chi::TaskResume Runtime::Create(hipc::FullPtr<CreateTask> task,
   router_.RegisterMchip("cluster", chi::PoolId(703, 0));
 
   // Start HTTP server via the StartHttpServer task mechanism
-  const auto& params = task->GetCreateParams();
+  // Note: RefreshTools() is called lazily on first tools/list request from the
+  // HTTP thread pool (safe to Wait() there — not inside a Chimaera worker).
+  const auto& params = task->GetParams();
   auto host = "0.0.0.0";
   auto port = static_cast<int>(params.http_port_);
   auto threads = static_cast<int>(params.http_threads_);
@@ -75,7 +77,7 @@ chi::TaskResume Runtime::Create(hipc::FullPtr<CreateTask> task,
 //=============================================================================
 
 chi::TaskResume Runtime::Destroy(
-    hipc::FullPtr<chi::admin::DestroyPoolTask> task,
+    hipc::FullPtr<chimaera::admin::DestroyPoolTask> task,
     chi::RunContext& /*rctx*/) {
   http_server_.Stop();
   task->return_code_ = 0;
@@ -103,9 +105,11 @@ HttpResponse Runtime::HandleHttpRequestSync(const std::string& body,
       return HttpResponse{200, "{}", "application/json"};
     }
     if (!std::holds_alternative<protocol::JsonRpcRequest>(msg)) {
-      return HttpResponse{400,
-                          MakeErrorResponse(nullptr, -32600, "Invalid request"),
-                          "application/json"};
+      return HttpResponse{
+          400,
+          MakeErrorResponse(nullptr, protocol::McpErrorCode::InvalidRequest,
+                            "Invalid request"),
+          "application/json"};
     }
 
     const auto& req = std::get<protocol::JsonRpcRequest>(msg);
@@ -117,7 +121,8 @@ HttpResponse Runtime::HandleHttpRequestSync(const std::string& body,
       if (!session_id.empty() && !session_manager_.ValidateSession(session_id)) {
         return HttpResponse{
             401,
-            MakeErrorResponse(id, -32000, "Session not found or expired"),
+            MakeErrorResponse(id, protocol::McpErrorCode::SessionNotFound,
+                              "Session not found or expired"),
             "application/json"};
       }
     }
@@ -135,19 +140,22 @@ HttpResponse Runtime::HandleHttpRequestSync(const std::string& body,
     } else {
       return HttpResponse{
           404,
-          MakeErrorResponse(id, -32601, "Method not found: " + method),
+          MakeErrorResponse(id, protocol::McpErrorCode::MethodNotFound,
+                            "Method not found: " + method),
           "application/json"};
     }
 
   } catch (const protocol::json::parse_error& e) {
     return HttpResponse{
         400,
-        MakeErrorResponse(id, -32700, std::string("Parse error: ") + e.what()),
+        MakeErrorResponse(id, protocol::McpErrorCode::ParseError,
+                          std::string("Parse error: ") + e.what()),
         "application/json"};
   } catch (const std::exception& e) {
     return HttpResponse{
         500,
-        MakeErrorResponse(id, -32603, std::string("Internal error: ") + e.what()),
+        MakeErrorResponse(id, protocol::McpErrorCode::InternalError,
+                          std::string("Internal error: ") + e.what()),
         "application/json"};
   }
 }
@@ -178,8 +186,13 @@ HttpResponse Runtime::HandleInitializeSync(
 }
 
 /// Handle tools/list — aggregate from all registered MChiPs.
+///
+/// RefreshTools is called once on the first tools/list request.  Running on
+/// the httplib thread pool is safe: we can block via .Wait() here without
+/// interfering with Chimaera worker coroutines.
 HttpResponse Runtime::HandleToolsListSync(
     const protocol::JsonRpcRequest& req) {
+  std::call_once(tools_refresh_flag_, [this]() { router_.RefreshTools(); });
   auto all_tools = router_.ListAllTools();
 
   protocol::json tools_arr = protocol::json::array();
@@ -203,7 +216,8 @@ HttpResponse Runtime::HandleToolsCallSync(
   if (!req.params.has_value()) {
     return HttpResponse{
         400,
-        MakeErrorResponse(req.id, -32602, "Missing params for tools/call"),
+        MakeErrorResponse(req.id, protocol::McpErrorCode::InvalidParams,
+                          "Missing params for tools/call"),
         "application/json"};
   }
 
@@ -211,7 +225,8 @@ HttpResponse Runtime::HandleToolsCallSync(
   if (!params.contains("name")) {
     return HttpResponse{
         400,
-        MakeErrorResponse(req.id, -32602, "Missing 'name' in tools/call"),
+        MakeErrorResponse(req.id, protocol::McpErrorCode::InvalidParams,
+                          "Missing 'name' in tools/call"),
         "application/json"};
   }
 
@@ -222,7 +237,7 @@ HttpResponse Runtime::HandleToolsCallSync(
   if (!route) {
     return HttpResponse{
         404,
-        MakeErrorResponse(req.id, -32601,
+        MakeErrorResponse(req.id, protocol::McpErrorCode::ToolNotFound,
                           "Tool not found: " + qualified_name),
         "application/json"};
   }
@@ -232,27 +247,28 @@ HttpResponse Runtime::HandleToolsCallSync(
     args = params["arguments"];
   }
 
-  // Stage 1: Return honest error if Chimaera runtime is not available
-  // Stage 2: co_await route->client.AsyncCallMcpTool(...)
-  // For now, indicate the ChiMod must be running
-  (void)route;
-  (void)tool_name;
-  (void)args;
+  // Dispatch to the MChiP via Chimaera task system.
+  // Called from httplib thread pool — .Wait() blocks until the MChiP responds.
+  try {
+    auto future = route->client.AsyncCallMcpTool(
+        chi::PoolQuery::Local(), tool_name, args.dump());
+    future.Wait();
 
-  // This path requires Chimaera to dispatch to the MChiP.
-  // The HTTP handler submits a HandleHttpRequestTask to the Chimaera
-  // worker queue and blocks. For standalone mode, return an informative error.
-  protocol::json error_result;
-  error_result["content"] = protocol::json::array();
-  error_result["content"].push_back({
-      {"type", "text"},
-      {"text", "Tool call routing requires the Chimaera runtime. "
-               "Start mchips_demo_server to enable MChiP routing."}
-  });
-  error_result["isError"] = true;
-
-  return HttpResponse{200, MakeSuccessResponse(req.id, error_result),
-                      "application/json"};
+    auto result_str = future->result_json_.str();
+    auto result_json = protocol::json::parse(result_str);
+    return HttpResponse{200, MakeSuccessResponse(req.id, result_json),
+                        "application/json"};
+  } catch (const std::exception& e) {
+    protocol::json error_result;
+    error_result["content"] = protocol::json::array();
+    error_result["content"].push_back({
+        {"type", "text"},
+        {"text", std::string("Tool execution failed: ") + e.what()}
+    });
+    error_result["isError"] = true;
+    return HttpResponse{200, MakeSuccessResponse(req.id, error_result),
+                        "application/json"};
+  }
 }
 
 /// Handle HTTP DELETE (session close).

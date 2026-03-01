@@ -10,6 +10,7 @@
 #include <chimaera/task.h>
 #include <chimaera/chimaera.h>
 #include <chimaera/admin/admin_tasks.h>
+#include <yaml-cpp/yaml.h>
 
 #include <mchips/mcp_gateway/autogen/mcp_gateway_methods.h>
 
@@ -28,6 +29,16 @@ struct CreateParams {
 
   CreateParams(chi::u32 http_port = 8080, chi::u32 http_threads = 4)
       : http_port_(http_port), http_threads_(http_threads) {}
+
+  void LoadConfig(const chi::PoolConfig& pool_config) {
+    YAML::Node config = YAML::Load(pool_config.config_);
+    if (config["http_port"]) {
+      http_port_ = config["http_port"].as<chi::u32>();
+    }
+    if (config["http_threads"]) {
+      http_threads_ = config["http_threads"].as<chi::u32>();
+    }
+  }
 
   template <class Archive>
   void serialize(Archive& ar) {

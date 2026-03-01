@@ -20,6 +20,10 @@ struct CreateParams {
 
   CreateParams() = default;
 
+  void LoadConfig(const chi::PoolConfig& /*pool_config*/) {
+    // No params to load from YAML config for CTE MChiP
+  }
+
   template <class Archive>
   void serialize(Archive& ar) {
     (void)ar;
