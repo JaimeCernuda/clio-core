@@ -17,11 +17,18 @@ add_chimod_client(
     mchips_sdk
 )
 
+# wrp_cae_core_client only exists when WRP_CORE_ENABLE_CAE=ON
+# (requires CMake 3.25+). Build without it for stub-only mode.
+set(_cae_extra_libs)
+if(TARGET wrp_cae_core_client)
+  list(APPEND _cae_extra_libs wrp_cae_core_client)
+endif()
+
 add_chimod_runtime(
   SOURCES
     src/mchip_cae_runtime.cc
     src/autogen/mchip_cae_lib_exec.cc
   LINK_LIBRARIES
     mchips_sdk
-    wrp_cae_core_client
+    ${_cae_extra_libs}
 )

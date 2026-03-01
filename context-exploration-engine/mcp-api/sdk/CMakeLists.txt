@@ -68,3 +68,10 @@ install(DIRECTORY include/
   DESTINATION include
   FILES_MATCHING PATTERN "*.h"
 )
+
+#------------------------------------------------------------------------------
+# Tests
+#------------------------------------------------------------------------------
+if(MCHIPS_ENABLE_TESTS)
+  add_subdirectory(test)
+endif()

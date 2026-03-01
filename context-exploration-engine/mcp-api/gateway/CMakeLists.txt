@@ -38,6 +38,6 @@ add_chimod_runtime(
 #------------------------------------------------------------------------------
 # Tests
 #------------------------------------------------------------------------------
-if(BUILD_TESTING)
-  # add_subdirectory(test)
+if(MCHIPS_ENABLE_TESTS)
+  add_subdirectory(test)
 endif()

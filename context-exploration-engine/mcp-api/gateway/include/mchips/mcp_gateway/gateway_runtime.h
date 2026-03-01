@@ -8,7 +8,10 @@
 #define MCHIPS_MCP_GATEWAY_GATEWAY_RUNTIME_H_
 
 #include <chimaera/container.h>
+#include <chimaera/admin/admin_tasks.h>
 
+#include <atomic>
+#include <chrono>
 #include <mutex>
 
 #include <mchips/protocol/json_rpc.h>
@@ -71,6 +74,8 @@ class Runtime : public chi::Container {
                                   chi::RunContext& rctx);
   chi::TaskResume StopHttpServer(hipc::FullPtr<StopHttpServerTask> task,
                                  chi::RunContext& rctx);
+  chi::TaskResume Monitor(hipc::FullPtr<chimaera::admin::MonitorTask> task,
+                          chi::RunContext& rctx);
 
   chi::u64 GetWorkRemaining() const override;
 
@@ -98,13 +103,29 @@ class Runtime : public chi::Container {
                  const hipc::FullPtr<chi::Task>& replica_task) override;
   void DelTask(chi::u32 method, hipc::FullPtr<chi::Task> task_ptr) override;
 
+ /// Gateway monitoring stats (exposed via Monitor "gateway_stats" query).
+  struct GatewayStats {
+    std::atomic<uint64_t> total_requests{0};
+    std::atomic<uint64_t> tool_calls{0};
+    std::atomic<uint64_t> tool_errors{0};
+    std::atomic<uint64_t> list_requests{0};
+    std::atomic<uint64_t> init_requests{0};
+    std::atomic<uint64_t> ping_requests{0};
+    std::atomic<uint64_t> parse_errors{0};
+    std::atomic<uint64_t> total_tool_latency_us{0};  ///< sum for mean calc
+    std::chrono::steady_clock::time_point start_time;
+  };
+
+  const GatewayStats& GetStats() const { return stats_; }
+
  private:
   Client client_;
   HttpServer http_server_;
   SessionManager session_manager_;
   SseWriter sse_writer_;
   MchipRouter router_;
-  std::once_flag tools_refresh_flag_;  ///< Ensures RefreshTools runs once
+  std::atomic<bool> tools_refreshed_{false};  ///< Lazy tool refresh flag
+  GatewayStats stats_;
 
   // Synchronous dispatch helpers (called from httplib thread pool)
   HttpResponse HandleHttpRequestSync(const std::string& body,

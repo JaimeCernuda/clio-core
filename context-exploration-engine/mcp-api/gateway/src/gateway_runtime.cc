@@ -59,7 +59,13 @@ chi::TaskResume Runtime::Create(hipc::FullPtr<CreateTask> task,
   http_server_.SetRequestHandler(
       [this](const std::string& body,
              const std::string& session_id) -> HttpResponse {
-        return HandleHttpRequestSync(body, session_id);
+        // Submit as Chimaera task; block on httplib thread (safe — not a worker)
+        auto future = client_.AsyncHandleHttpRequest(
+            chi::PoolQuery::Local(), body, session_id);
+        future.Wait();
+        std::string response_body(future->response_body_.str());
+        auto http_status = static_cast<int>(future->http_status_);
+        return HttpResponse{http_status, response_body, "application/json"};
       });
 
   http_server_.SetDeleteHandler(
@@ -68,6 +74,7 @@ chi::TaskResume Runtime::Create(hipc::FullPtr<CreateTask> task,
       });
 
   http_server_.Start(host, port, threads);
+  stats_.start_time = std::chrono::steady_clock::now();
 
   task->return_code_ = 0;
   co_return;
@@ -193,7 +200,10 @@ HttpResponse Runtime::HandleInitializeSync(
 /// interfering with Chimaera worker coroutines.
 HttpResponse Runtime::HandleToolsListSync(
     const protocol::JsonRpcRequest& req) {
-  std::call_once(tools_refresh_flag_, [this]() { router_.RefreshTools(); });
+  if (!tools_refreshed_.load(std::memory_order_acquire)) {
+    router_.RefreshTools();
+    tools_refreshed_.store(true, std::memory_order_release);
+  }
   auto all_tools = router_.ListAllTools();
 
   protocol::json tools_arr = protocol::json::array();
@@ -287,13 +297,192 @@ HttpResponse Runtime::HandleDeleteSync(const std::string& session_id) {
 chi::TaskResume Runtime::HandleHttpRequest(
     hipc::FullPtr<HandleHttpRequestTask> task,
     chi::RunContext& /*rctx*/) {
-  std::string request_body(task->request_body_.str());
+  stats_.total_requests.fetch_add(1, std::memory_order_relaxed);
+
+  std::string body(task->request_body_.str());
   std::string session_id(task->session_id_.str());
 
-  auto response = HandleHttpRequestSync(request_body, session_id);
+  protocol::json id = nullptr;
+  try {
+    auto j = protocol::json::parse(body);
+    auto msg = protocol::ParseMessage(j);
 
-  task->response_body_ = chi::priv::string(HSHM_MALLOC, response.body);
-  task->http_status_ = static_cast<chi::u32>(response.status_code);
+    // Notifications: empty 200
+    if (std::holds_alternative<protocol::JsonRpcNotification>(msg)) {
+      task->response_body_ = chi::priv::string(HSHM_MALLOC, "{}");
+      task->http_status_ = 200;
+      task->return_code_ = 0;
+      co_return;
+    }
+    if (!std::holds_alternative<protocol::JsonRpcRequest>(msg)) {
+      task->response_body_ = chi::priv::string(HSHM_MALLOC,
+          MakeErrorResponse(nullptr, protocol::McpErrorCode::InvalidRequest,
+                            "Invalid request"));
+      task->http_status_ = 400;
+      task->return_code_ = 0;
+      co_return;
+    }
+
+    const auto& req = std::get<protocol::JsonRpcRequest>(msg);
+    id = req.id;
+    const auto& method = req.method;
+
+    // Validate session for all methods except initialize
+    if (method != protocol::methods::kInitialize) {
+      if (!session_id.empty() &&
+          !session_manager_.ValidateSession(session_id)) {
+        task->response_body_ = chi::priv::string(HSHM_MALLOC,
+            MakeErrorResponse(id, protocol::McpErrorCode::SessionNotFound,
+                              "Session not found or expired"));
+        task->http_status_ = 401;
+        task->return_code_ = 0;
+        co_return;
+      }
+    }
+
+    // ---- Dispatch by method ----
+    if (method == protocol::methods::kInitialize) {
+      stats_.init_requests.fetch_add(1, std::memory_order_relaxed);
+      // Initialize: inline (no sub-tasks needed)
+      auto resp = HandleInitializeSync(req);
+      task->response_body_ = chi::priv::string(HSHM_MALLOC, resp.body);
+      task->http_status_ = static_cast<chi::u32>(resp.status_code);
+
+    } else if (method == protocol::methods::kToolsList) {
+      stats_.list_requests.fetch_add(1, std::memory_order_relaxed);
+      // Lazy tool refresh using co_await (not .Wait())
+      if (!tools_refreshed_.load(std::memory_order_acquire)) {
+        for (auto& [name, route] : router_.GetRoutes()) {
+          try {
+            auto list_future = route.client.AsyncListMcpTools(
+                chi::PoolQuery::Local());
+            co_await list_future;
+            auto json_str = list_future->result_json_.str();
+            auto tools_json = protocol::json::parse(json_str);
+            route.tools.clear();
+            for (const auto& tool_json : tools_json) {
+              route.tools.push_back(
+                  protocol::ToolDefinition::FromJson(tool_json));
+            }
+          } catch (const std::exception&) {
+            // Leave tools empty if MChiP doesn't respond
+          }
+        }
+        tools_refreshed_.store(true, std::memory_order_release);
+      }
+
+      auto all_tools = router_.ListAllTools();
+      protocol::json tools_arr = protocol::json::array();
+      for (const auto& tool : all_tools) {
+        tools_arr.push_back(tool.ToJson());
+      }
+      protocol::json result;
+      result["tools"] = tools_arr;
+      task->response_body_ = chi::priv::string(HSHM_MALLOC,
+          MakeSuccessResponse(req.id, result));
+      task->http_status_ = 200;
+
+    } else if (method == protocol::methods::kToolsCall) {
+      stats_.tool_calls.fetch_add(1, std::memory_order_relaxed);
+      if (!req.params.has_value()) {
+        task->response_body_ = chi::priv::string(HSHM_MALLOC,
+            MakeErrorResponse(req.id, protocol::McpErrorCode::InvalidParams,
+                              "Missing params for tools/call"));
+        task->http_status_ = 400;
+        task->return_code_ = 0;
+        co_return;
+      }
+
+      const auto& params = *req.params;
+      if (!params.contains("name")) {
+        task->response_body_ = chi::priv::string(HSHM_MALLOC,
+            MakeErrorResponse(req.id, protocol::McpErrorCode::InvalidParams,
+                              "Missing 'name' in tools/call"));
+        task->http_status_ = 400;
+        task->return_code_ = 0;
+        co_return;
+      }
+
+      auto qualified_name = params["name"].get<std::string>();
+      std::string tool_name;
+      auto* route = router_.Route(qualified_name, tool_name);
+
+      if (!route) {
+        task->response_body_ = chi::priv::string(HSHM_MALLOC,
+            MakeErrorResponse(req.id, protocol::McpErrorCode::ToolNotFound,
+                              "Tool not found: " + qualified_name));
+        task->http_status_ = 404;
+        task->return_code_ = 0;
+        co_return;
+      }
+
+      protocol::json args = protocol::json::object();
+      if (params.contains("arguments") && params["arguments"].is_object()) {
+        args = params["arguments"];
+      }
+
+      // Dispatch via Chimaera with co_await (NOT .Wait())
+      try {
+        auto call_start = std::chrono::steady_clock::now();
+        auto tool_future = route->client.AsyncCallMcpTool(
+            chi::PoolQuery::Local(), tool_name, args.dump());
+        co_await tool_future;
+        auto call_end = std::chrono::steady_clock::now();
+        auto call_us = std::chrono::duration_cast<std::chrono::microseconds>(
+            call_end - call_start).count();
+        stats_.total_tool_latency_us.fetch_add(
+            static_cast<uint64_t>(call_us), std::memory_order_relaxed);
+
+        auto result_str = tool_future->result_json_.str();
+        auto result_json = protocol::json::parse(result_str);
+
+        if (result_json.value("isError", false)) {
+          stats_.tool_errors.fetch_add(1, std::memory_order_relaxed);
+        }
+
+        task->response_body_ = chi::priv::string(HSHM_MALLOC,
+            MakeSuccessResponse(req.id, result_json));
+        task->http_status_ = 200;
+      } catch (const std::exception& e) {
+        stats_.tool_errors.fetch_add(1, std::memory_order_relaxed);
+        protocol::json error_result;
+        error_result["content"] = protocol::json::array();
+        error_result["content"].push_back({
+            {"type", "text"},
+            {"text", std::string("Tool execution failed: ") + e.what()}
+        });
+        error_result["isError"] = true;
+        task->response_body_ = chi::priv::string(HSHM_MALLOC,
+            MakeSuccessResponse(req.id, error_result));
+        task->http_status_ = 200;
+      }
+
+    } else if (method == protocol::methods::kPing) {
+      stats_.ping_requests.fetch_add(1, std::memory_order_relaxed);
+      task->response_body_ = chi::priv::string(HSHM_MALLOC,
+          MakeSuccessResponse(id, protocol::json::object()));
+      task->http_status_ = 200;
+
+    } else {
+      task->response_body_ = chi::priv::string(HSHM_MALLOC,
+          MakeErrorResponse(id, protocol::McpErrorCode::MethodNotFound,
+                            "Method not found: " + method));
+      task->http_status_ = 404;
+    }
+
+  } catch (const protocol::json::parse_error& e) {
+    stats_.parse_errors.fetch_add(1, std::memory_order_relaxed);
+    task->response_body_ = chi::priv::string(HSHM_MALLOC,
+        MakeErrorResponse(id, protocol::McpErrorCode::ParseError,
+                          std::string("Parse error: ") + e.what()));
+    task->http_status_ = 400;
+  } catch (const std::exception& e) {
+    task->response_body_ = chi::priv::string(HSHM_MALLOC,
+        MakeErrorResponse(id, protocol::McpErrorCode::InternalError,
+                          std::string("Internal error: ") + e.what()));
+    task->http_status_ = 500;
+  }
+
   task->return_code_ = 0;
   co_return;
 }
@@ -351,6 +540,41 @@ chi::TaskResume Runtime::StopHttpServer(
   http_server_.Stop();
   task->success_ = 1;
   task->return_code_ = 0;
+  co_return;
+}
+
+chi::TaskResume Runtime::Monitor(
+    hipc::FullPtr<chimaera::admin::MonitorTask> task,
+    chi::RunContext& /*rctx*/) {
+  if (task->query_ == "gateway_stats") {
+    auto now = std::chrono::steady_clock::now();
+    auto uptime_s = std::chrono::duration_cast<std::chrono::seconds>(
+        now - stats_.start_time).count();
+
+    uint64_t calls = stats_.tool_calls.load(std::memory_order_relaxed);
+    uint64_t total_latency = stats_.total_tool_latency_us.load(
+        std::memory_order_relaxed);
+    double avg_latency_us = calls > 0
+        ? static_cast<double>(total_latency) / static_cast<double>(calls)
+        : 0.0;
+
+    protocol::json result = {
+        {"uptime_seconds", uptime_s},
+        {"total_requests", stats_.total_requests.load(std::memory_order_relaxed)},
+        {"tool_calls", calls},
+        {"tool_errors", stats_.tool_errors.load(std::memory_order_relaxed)},
+        {"list_requests", stats_.list_requests.load(std::memory_order_relaxed)},
+        {"init_requests", stats_.init_requests.load(std::memory_order_relaxed)},
+        {"ping_requests", stats_.ping_requests.load(std::memory_order_relaxed)},
+        {"parse_errors", stats_.parse_errors.load(std::memory_order_relaxed)},
+        {"avg_tool_latency_us", avg_latency_us},
+        {"active_sessions", session_manager_.Count()},
+        {"registered_mchips", router_.NumMchips()},
+        {"total_tools", router_.ListAllTools().size()}
+    };
+    task->results_[container_id_] = result.dump();
+  }
+  task->SetReturnCode(0);
   co_return;
 }
 

@@ -128,6 +128,23 @@ class MchipRouter {
   /// Get the number of registered MChiPs.
   size_t NumMchips() const { return routes_.size(); }
 
+  /// Access the routes map (for co_await iteration in coroutines).
+  std::unordered_map<std::string, MchipRoute>& GetRoutes() { return routes_; }
+
+  /// Const access to the routes map.
+  const std::unordered_map<std::string, MchipRoute>& GetRoutes() const {
+    return routes_;
+  }
+
+  /// Register a MChiP route directly (for unit testing without Chimaera).
+  ///
+  /// Allows populating the router with pre-built routes, bypassing
+  /// the Chimaera client initialization in RegisterMchip().
+  void RegisterMchipDirect(MchipRoute route) {
+    auto name = route.name;
+    routes_[name] = std::move(route);
+  }
+
  private:
   std::unordered_map<std::string, MchipRoute> routes_;
 };

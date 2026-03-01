@@ -24,3 +24,7 @@ add_chimod_runtime(
   LINK_LIBRARIES
     mchips_sdk
 )
+
+if(MCHIPS_ENABLE_TESTS)
+  add_subdirectory(test)
+endif()

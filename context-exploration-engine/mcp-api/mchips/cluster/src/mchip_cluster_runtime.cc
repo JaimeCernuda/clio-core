@@ -156,6 +156,7 @@ protocol::json Runtime::HandleListPools(const protocol::json& /*args*/) {
         {"701.0", "mchip_cte",     "mchips_mchip_cte"},
         {"702.0", "mchip_cae",     "mchips_mchip_cae"},
         {"703.0", "mchip_cluster", "mchips_mchip_cluster"},
+        {"704.0", "mchip_demo",    "mchips_mchip_demo"},
     };
 
     std::string text = "Active Chimaera Pools:\n";

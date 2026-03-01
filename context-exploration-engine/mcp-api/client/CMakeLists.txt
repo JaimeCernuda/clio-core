@@ -54,6 +54,33 @@ install(DIRECTORY include/
 )
 
 #------------------------------------------------------------------------------
+# mchips_native_client — Native IOWarp client (Chimaera IPC, no HTTP)
+#------------------------------------------------------------------------------
+
+add_library(mchips_native_client SHARED
+  src/native_client.cc
+)
+
+target_include_directories(mchips_native_client
+  PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>
+)
+
+target_link_libraries(mchips_native_client
+  PUBLIC
+    mchips_mcp_gateway_client
+    mchips_protocol
+    chimaera_cxx
+    hshm::cxx
+)
+
+set_target_properties(mchips_native_client PROPERTIES
+  CXX_STANDARD 20
+  CXX_STANDARD_REQUIRED ON
+)
+
+#------------------------------------------------------------------------------
 # Tests
 #------------------------------------------------------------------------------
 if(BUILD_TESTING)

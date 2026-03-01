@@ -55,3 +55,12 @@ endif()
 
 # Demo programs (always built)
 add_subdirectory(demo)
+
+# Integration tests and benchmarks
+# Use MCHIPS_ENABLE_TESTS to avoid conflict with IOWarp's master WRP_CORE_ENABLE_TESTS
+# which forces BUILD_TESTING=OFF when disabled.
+option(MCHIPS_ENABLE_TESTS "Build MChiPs unit and integration tests" ON)
+if(MCHIPS_ENABLE_TESTS)
+  enable_testing()
+  add_subdirectory(tests)
+endif()
