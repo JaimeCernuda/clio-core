@@ -36,7 +36,7 @@ set_target_properties(dt_proxy_http PROPERTIES
 # ChiMod client library
 add_chimod_client(
   SOURCES
-    # Client is header-only for now
+    src/proxy_client.cc
   LINK_LIBRARIES
     chimaera_admin_client
 )
@@ -48,7 +48,7 @@ add_chimod_runtime(
     src/autogen/dt_proxy_lib_exec.cc
   LINK_LIBRARIES
     chimaera_admin_runtime
-    dt_proxy_http
+    $<BUILD_INTERFACE:dt_proxy_http>
 )
 
 # Tests

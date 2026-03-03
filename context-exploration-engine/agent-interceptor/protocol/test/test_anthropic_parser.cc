@@ -69,8 +69,8 @@ TEST_CASE("AnthropicParser::ParseRequest captures system prompt length",
   InteractionRecord record;
   AnthropicParser::ParseRequest(body, record);
 
-  // "You are a helpful coding assistant." = 36 chars
-  REQUIRE(record.context_metrics.system_prompt_length == 36);
+  // "You are a helpful coding assistant." = 35 chars
+  REQUIRE(record.context_metrics.system_prompt_length == 35);
 }
 
 TEST_CASE("AnthropicParser::ParseRequest handles array system prompt",

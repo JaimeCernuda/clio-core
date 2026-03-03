@@ -49,7 +49,7 @@ int main(int argc, char* argv[]) {
   Config cfg = ParseArgs(argc, argv);
 
   // Initialize as Chimaera client
-  CHIMAERA_INIT(kClient, true);
+  chi::CHIMAERA_INIT(chi::ChimaeraMode::kClient, true);
 
   // Connect to the tracker
   dt_provenance::tracker::Client tracker;

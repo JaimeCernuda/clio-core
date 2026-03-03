@@ -119,27 +119,28 @@ TEST_CASE("OpenAIParser::ParseStreamChunk handles tool call deltas",
           "[openai]") {
   InteractionRecord record;
 
-  json chunk1 = {
-      {"choices",
-       json::array(
-           {json{{"delta",
-                   {{"tool_calls",
-                     json::array({json{{"index", 0},
-                                       {"id", "call_xyz"},
-                                       {"function",
-                                        {{"name", "read"},
-                                         {"arguments", "{\"path\":"}}}}})}}},
-                  {"finish_reason", nullptr}}})}};
-  json chunk2 = {
-      {"choices",
-       json::array(
-           {json{{"delta",
-                   {{"tool_calls",
-                     json::array(
-                         {json{{"index", 0},
-                               {"function",
-                                {{"arguments", " \"test.txt\"}"}}}}})}}}},
-                  {"finish_reason", nullptr}}})}};
+  json chunk1 = json::parse(R"({
+    "choices": [{
+      "delta": {
+        "tool_calls": [{
+          "index": 0, "id": "call_xyz",
+          "function": {"name": "read", "arguments": "{\"path\":"}
+        }]
+      },
+      "finish_reason": null
+    }]
+  })");
+  json chunk2 = json::parse(R"({
+    "choices": [{
+      "delta": {
+        "tool_calls": [{
+          "index": 0,
+          "function": {"arguments": " \"test.txt\"}"}
+        }]
+      },
+      "finish_reason": null
+    }]
+  })");
 
   OpenAIParser::ParseStreamChunk(chunk1, record);
   OpenAIParser::ParseStreamChunk(chunk2, record);

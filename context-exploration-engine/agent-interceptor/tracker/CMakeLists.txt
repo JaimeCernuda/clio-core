@@ -18,7 +18,7 @@ target_include_directories(dt_tracker_threading
 
 target_link_libraries(dt_tracker_threading
   PUBLIC
-    dt_provenance::protocol
+    $<BUILD_INTERFACE:dt_protocol>
     $<BUILD_INTERFACE:nlohmann_json::nlohmann_json>
 )
 
@@ -30,10 +30,10 @@ set_target_properties(dt_tracker_threading PROPERTIES
 # ChiMod client library
 add_chimod_client(
   SOURCES
-    # Header-only client
+    src/tracker_client.cc
   LINK_LIBRARIES
     chimaera_admin_client
-    dt_provenance::protocol
+    $<BUILD_INTERFACE:dt_protocol>
 )
 
 # ChiMod runtime library
@@ -43,7 +43,7 @@ add_chimod_runtime(
     src/autogen/dt_tracker_lib_exec.cc
   LINK_LIBRARIES
     chimaera_admin_runtime
-    dt_tracker_threading
+    $<BUILD_INTERFACE:dt_tracker_threading>
     $<BUILD_INTERFACE:nlohmann_json::nlohmann_json>
 )
 
