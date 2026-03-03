@@ -49,7 +49,7 @@ static void ParseUrl(const std::string& url, std::string& host, int& port,
 
 chi::TaskResume Runtime::Create(hipc::FullPtr<CreateTask> task,
                                 chi::RunContext& rctx) {
-  auto& params = task->GetNewContainerParams<CreateParams>();
+  CreateParams params = task->GetParams();
   std::string url(params.upstream_base_url_.str());
 
   ParseUrl(url, upstream_host_, upstream_port_, upstream_ssl_);
@@ -212,3 +212,5 @@ chi::u64 Runtime::GetWorkRemaining() const {
 }
 
 }  // namespace dt_provenance::interception::ollama
+
+CHI_TASK_CC(dt_provenance::interception::ollama::Runtime)

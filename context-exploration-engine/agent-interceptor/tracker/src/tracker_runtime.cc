@@ -1,6 +1,5 @@
 #include "dt_provenance/tracker/tracker_runtime.h"
 
-#include <fmt/format.h>
 #include <nlohmann/json.hpp>
 
 namespace dt_provenance::tracker {
@@ -154,3 +153,5 @@ chi::TaskResume Runtime::Destroy(hipc::FullPtr<DestroyTask> task,
 chi::u64 Runtime::GetWorkRemaining() const { return 0; }
 
 }  // namespace dt_provenance::tracker
+
+CHI_TASK_CC(dt_provenance::tracker::Runtime)

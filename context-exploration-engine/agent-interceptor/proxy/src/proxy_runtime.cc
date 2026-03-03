@@ -7,7 +7,7 @@ namespace dt_provenance::proxy {
 chi::TaskResume Runtime::Create(hipc::FullPtr<CreateTask> task,
                                 chi::RunContext& rctx) {
   // Extract create params
-  auto& params = task->GetNewContainerParams<CreateParams>();
+  CreateParams params = task->GetParams();
   uint16_t port = params.port_;
   int num_threads = params.num_threads_;
 
@@ -63,3 +63,5 @@ chi::u64 Runtime::GetWorkRemaining() const {
 }
 
 }  // namespace dt_provenance::proxy
+
+CHI_TASK_CC(dt_provenance::proxy::Runtime)
