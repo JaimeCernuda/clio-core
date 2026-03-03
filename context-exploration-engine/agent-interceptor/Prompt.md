@@ -1,8 +1,52 @@
 # DTProvenance — Ares Build & Test Playbook
 
-This is the self-contained build and test protocol for the DTProvenance agent
-interception pipeline on the Ares HPC cluster. Each phase is independent — you
-can stop after any phase and resume later.
+## Environment
+
+You are running on **Ares**, an HPC cluster at IIT Gnosis Research Center.
+
+- **OS:** Rocky Linux 8, x86_64
+- **Job scheduler:** SLURM (`sbatch`, `srun`, `salloc`)
+- **Package manager:** Spack (environment `mchips` has all dependencies)
+- **Compute nodes** have no internet access — FetchContent deps must be cached or pre-fetched on a login node
+- **Login nodes** have internet but limited CPU/memory — do builds and tests inside SLURM jobs or `salloc` interactive sessions
+- **Working directory:** `~/MChiPs/` (this repo)
+- **Submodule:** `clio-core/` at branch `DTProvenance`
+
+### Getting started on Ares
+
+```bash
+# 1. Clone (if not already present)
+cd ~/
+git clone --recursive https://github.com/JaimeCernuda/MChiPs.git
+cd MChiPs
+git submodule update --init --recursive
+
+# 2. Switch clio-core to the DTProvenance branch
+cd clio-core
+git checkout DTProvenance
+cd ..
+
+# 3. Get an interactive session for building/testing
+salloc -N 1 --cpus-per-task=16 --mem=32G --time=02:00:00
+
+# 4. Activate spack
+spack env activate mchips
+```
+
+All commands below assume you are inside an `salloc` session with `mchips` active.
+
+---
+
+## Mission
+
+Build and test the DTProvenance agent interception pipeline. Work through
+phases A → B → C → D → E in order. Each phase has a **gate** — all tests in
+that phase must pass before you move on. If a test fails, fix the code and
+re-run. Do not skip phases.
+
+**Commit after each phase** with `feat:` or `fix:` prefix.
+
+---
 
 ## Architecture Overview
 
@@ -38,6 +82,24 @@ Agent → HTTP Proxy (pool 800) → Provider Interception (801-803)
 ---
 
 ## Phase A: Environment + Build
+
+### A0. Pre-fetch dependencies (login node, one time only)
+
+FetchContent needs internet. Compute nodes may not have it. Run the CMake
+configure step once on a login node to populate the build/_deps cache, then
+do the actual build inside `salloc`.
+
+```bash
+# On login node (has internet)
+spack env activate mchips
+cd clio-core && mkdir -p build && cd build
+cmake .. -DCMAKE_BUILD_TYPE=Release -GNinja \
+  -DWRP_CORE_ENABLE_CTE=ON -DWRP_CORE_ENABLE_CEE=ON \
+  -DDT_PROVENANCE_ENABLE_TESTS=ON
+# This downloads nlohmann_json, cpp-httplib, Catch2 into build/_deps/
+# Cancel the build (Ctrl-C) — you'll do the real build in salloc
+cd ../..
+```
 
 ### A1. Activate spack environment
 
@@ -298,19 +360,24 @@ wait $PROXY_PID 2>/dev/null || true
 ## Phase E: Real End-to-End with Claude Agents
 
 This phase routes real Claude agent traffic through DTProvenance. Requires:
-- `ANTHROPIC_API_KEY` set in environment
+- `ANTHROPIC_API_KEY` set in environment (export it or put in `~/.bashrc`)
 - `claude_agent_sdk` Python package installed (`uv add claude-agent-sdk`)
-- SLURM access on Ares
+- A SLURM allocation on Ares (the test_deployment.sbatch handles this)
+- **Network access** to api.anthropic.com from the compute node (check with `curl -s https://api.anthropic.com`)
 
-### E1. Submit via SLURM
+### E1. Submit via SLURM (preferred)
 
 ```bash
-# From MChiPs project root
+# From MChiPs project root (~/MChiPs)
 mkdir -p logs
 sbatch clio-core/context-exploration-engine/agent-interceptor/deploy/test_deployment.sbatch
+
+# Monitor
+squeue -u $USER
+tail -f logs/test_*.out
 ```
 
-### E2. Or run manually (interactive node)
+### E2. Or run manually (inside an existing salloc session)
 
 ```bash
 # 1. Start server
