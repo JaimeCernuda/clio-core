@@ -360,7 +360,7 @@ wait $PROXY_PID 2>/dev/null || true
 ## Phase E: Real End-to-End with Claude Agents
 
 This phase routes real Claude agent traffic through DTProvenance. Requires:
-- `ANTHROPIC_API_KEY` set in environment (export it or put in `~/.bashrc`)
+- **Claude Code OAuth token** already present in `~/.claude/` (auto-discovered by `claude_agent_sdk` — no `ANTHROPIC_API_KEY` needed)
 - `claude_agent_sdk` Python package installed (`uv add claude-agent-sdk`)
 - A SLURM allocation on Ares (the test_deployment.sbatch handles this)
 - **Network access** to api.anthropic.com from the compute node (check with `curl -s https://api.anthropic.com`)
