@@ -280,34 +280,10 @@ chi::TaskResume Runtime::StopRuntime(hipc::FullPtr<StopRuntimeTask> task,
   task->return_code_ = 0;
   task->error_message_ = "";
 
-  try {
-    // Set shutdown flag
-    is_shutdown_requested_ = true;
-
-    // Broadcast our departure to all nodes so they immediately mark us
-    // as dead and elect a new leader (skips the ~18 s SWIM detection delay).
-    // TASK_FIRE_AND_FORGET: co_await returns instantly; remote peers skip
-    // SendOut (no response needed).  net_timeout=0: dead peers are skipped
-    // immediately in SendIn.
-    auto *ipc_manager = CHI_IPC;
-    chi::u64 my_node_id = ipc_manager->GetNodeId();
-
-    HLOG(kInfo, "Admin: Broadcasting shutdown announcement for node {}",
-         my_node_id);
-    co_await client_.AsyncAnnounceShutdown(
-        chi::PoolQuery::Broadcast(0), my_node_id);
-
-    task->return_code_ = 0;
-    HLOG(kInfo, "Admin: Runtime shutdown initiated successfully");
-    InitiateShutdown(task->grace_period_ms_);
-
-  } catch (const std::exception &e) {
-    task->return_code_ = 99;
-    std::string error_msg =
-        std::string("Exception during runtime shutdown: ") + e.what();
-    task->error_message_ = chi::priv::string(HSHM_MALLOC, error_msg);
-    HLOG(kError, "Admin: Runtime shutdown failed with exception: {}", e.what());
-  }
+  // Die immediately. SWIM will detect the death and trigger recovery.
+  is_shutdown_requested_ = true;
+  HLOG(kInfo, "Admin: Runtime shutdown initiated successfully");
+  InitiateShutdown(task->grace_period_ms_);
   (void)rctx;
   co_return;
 }
@@ -737,9 +713,6 @@ chi::TaskResume Runtime::Send(hipc::FullPtr<SendTask> task,
 void Runtime::RecvIn(hipc::FullPtr<RecvTask> task,
                      chi::LoadTaskArchive &archive,
                      hshm::lbm::Transport *lbm_transport) {
-  // Set I/O size to 1MB to ensure routing to slow workers
-  task->stat_.io_size_ = 1024 * 1024;  // 1MB
-
   auto *ipc_manager = CHI_IPC;
   auto *pool_manager = CHI_POOL_MANAGER;
 
@@ -770,6 +743,22 @@ void Runtime::RecvIn(hipc::FullPtr<RecvTask> task,
     if (task_ptr.IsNull()) {
       HLOG(kError, "Admin: Failed to load task");
       continue;
+    }
+
+    // If the sender is a node we marked kDead, mark it alive.
+    // This handles restarted nodes: their SWIM probes reach us here,
+    // letting us rediscover them without requiring --induct.
+    // Only trigger on kDead (not kProbeFailed/kSuspected) to avoid
+    // flip-flopping during normal SWIM failure detection.
+    chi::u64 sender_node = task_ptr->pool_query_.GetReturnNode();
+    if (sender_node != ipc_manager->GetNodeId() &&
+        ipc_manager->GetNodeState(sender_node) == chi::NodeState::kDead) {
+      HLOG(kInfo, "[RecvIn] Received task from dead node {}, marking alive",
+           sender_node);
+      // Flush stale retry entries BEFORE marking alive so
+      // ProcessRetryQueues doesn't resend old tasks to the fresh runtime.
+      FlushStaleStateForNode(sender_node);
+      ipc_manager->SetAlive(sender_node);
     }
 
     // Mark task as remote, set as data owner, clear sender-side flags
@@ -810,9 +799,6 @@ void Runtime::RecvIn(hipc::FullPtr<RecvTask> task,
 void Runtime::RecvOut(hipc::FullPtr<RecvTask> task,
                       chi::LoadTaskArchive &archive,
                       hshm::lbm::Transport *lbm_transport) {
-  // Set I/O size to 1MB to ensure routing to slow workers
-  task->stat_.io_size_ = 1024 * 1024;  // 1MB
-
   auto *pool_manager = CHI_POOL_MANAGER;
 
   const auto &task_infos = archive.GetTaskInfos();
@@ -1272,6 +1258,8 @@ chi::TaskResume Runtime::Monitor(hipc::FullPtr<MonitorTask> task,
     MonitorSystemStats(task);
   } else if (task->query_ == "bdev_stats") {
     co_await MonitorBdevStats(task);
+  } else if (task->query_ == "container_stats") {
+    MonitorContainerStats(task);
   } else if (task->query_ == "get_host_info") {
     MonitorGetHostInfo(task);
   } else {
@@ -1304,7 +1292,7 @@ void Runtime::MonitorWorkerStats(hipc::FullPtr<MonitorTask> task) {
       continue;
     }
     chi::WorkerStats stats = worker->GetWorkerStats();
-    pk.pack_map(10);
+    pk.pack_map(11);
     pk.pack("worker_id");
     pk.pack(stats.worker_id_);
     pk.pack("is_running");
@@ -1325,6 +1313,81 @@ void Runtime::MonitorWorkerStats(hipc::FullPtr<MonitorTask> task) {
     pk.pack(stats.suspend_period_us_);
     pk.pack("num_tasks_processed");
     pk.pack(stats.num_tasks_processed_);
+    pk.pack("load");
+    pk.pack(stats.load_);
+  }
+
+  task->results_[container_id_] = std::string(sbuf.data(), sbuf.size());
+}
+
+void Runtime::MonitorContainerStats(hipc::FullPtr<MonitorTask> task) {
+  auto *pool_manager = CHI_POOL_MANAGER;
+  if (!pool_manager) {
+    task->SetReturnCode(1);
+    return;
+  }
+
+  msgpack::sbuffer sbuf;
+  msgpack::packer<msgpack::sbuffer> pk(sbuf);
+
+  auto pool_ids = pool_manager->GetAllPoolIds();
+  pk.pack_array(pool_ids.size());
+
+  for (const auto &pid : pool_ids) {
+    const auto *info = pool_manager->GetPoolInfo(pid);
+    if (!info) continue;
+
+    // Get the static container for model data
+    chi::Container *container = pool_manager->GetStaticContainer(pid);
+
+    pk.pack_map(6);
+
+    pk.pack("pool_id");
+    pk.pack(pid.ToString());
+
+    pk.pack("pool_name");
+    pk.pack(info->pool_name_);
+
+    pk.pack("chimod_name");
+    pk.pack(info->chimod_name_);
+
+    pk.pack("container_id");
+    pk.pack(container ? container->container_id_ : 0u);
+
+    // Model data: array of per-method entries
+    if (container) {
+      const auto &model = container->GetMethodModel();
+      const auto &mape = container->GetMethodMapeVec();
+      const auto &model_wall = container->GetMethodModelWall();
+      const auto &mape_wall = container->GetMethodMapeWallVec();
+      const auto &names = container->GetMethodNames();
+
+      pk.pack("methods");
+      pk.pack_array(model.size());
+      for (size_t i = 0; i < model.size(); ++i) {
+        pk.pack_map(6);
+        pk.pack("id");
+        pk.pack(static_cast<uint32_t>(i));
+        pk.pack("name");
+        pk.pack(i < names.size() ? names[i] : std::string());
+        pk.pack("coefficient");
+        pk.pack(model[i]);
+        pk.pack("mape");
+        pk.pack(i < mape.size() ? mape[i] : 0.0f);
+        pk.pack("wall_coefficient");
+        pk.pack(i < model_wall.size() ? model_wall[i] : 0.0f);
+        pk.pack("wall_mape");
+        pk.pack(i < mape_wall.size() ? mape_wall[i] : 0.0f);
+      }
+
+      pk.pack("learning_rate");
+      pk.pack(container->GetLearningRate());
+    } else {
+      pk.pack("methods");
+      pk.pack_array(0);
+      pk.pack("learning_rate");
+      pk.pack(0.0f);
+    }
   }
 
   task->results_[container_id_] = std::string(sbuf.data(), sbuf.size());
@@ -1477,7 +1540,7 @@ void Runtime::MonitorSystemStats(hipc::FullPtr<MonitorTask> task) {
   for (chi::u64 idx = start; idx < tail; ++idx) {
     SystemStats s;
     if (system_stats_ring_->Peek(idx, s)) {
-      pk.pack_map(15);
+      pk.pack_map(16);
       pk.pack("event_id");
       pk.pack(idx);
       pk.pack("timestamp_ns");
@@ -1508,6 +1571,8 @@ void Runtime::MonitorSystemStats(hipc::FullPtr<MonitorTask> task) {
       pk.pack(CHI_IPC->GetThisHost().ip_address);
       pk.pack("node_id");
       pk.pack(CHI_IPC->GetNodeId());
+      pk.pack("is_leader");
+      pk.pack(CHI_IPC->IsLeader());
     } else {
       pk.pack_map(0);
     }
@@ -1557,7 +1622,6 @@ chi::TaskResume Runtime::MonitorBdevStats(hipc::FullPtr<MonitorTask> task) {
   auto *pool_manager = CHI_POOL_MANAGER;
   auto *ipc_manager = CHI_IPC;
   auto all_pool_ids = pool_manager->GetAllPoolIds();
-
   msgpack::sbuffer sbuf;
   msgpack::packer<msgpack::sbuffer> pk(sbuf);
 
@@ -1572,7 +1636,8 @@ chi::TaskResume Runtime::MonitorBdevStats(hipc::FullPtr<MonitorTask> task) {
 
   pk.pack_array(static_cast<uint32_t>(bdev_pools.size()));
 
-  for (const auto &pid : bdev_pools) {
+  for (size_t i = 0; i < bdev_pools.size(); ++i) {
+    const auto &pid = bdev_pools[i];
     const auto *info = pool_manager->GetPoolInfo(pid);
     // Create sub-MonitorTask targeting this bdev pool (local routing)
     chi::PoolQuery bdev_query;  // default = Local routing
@@ -2109,6 +2174,43 @@ void Runtime::ScanSendMapTimeouts() {
   }
 }
 
+void Runtime::FlushStaleStateForNode(chi::u64 node_id) {
+  // 1. Discard send_in retry entries targeting this node.
+  //    For each discarded entry, increment the origin task's
+  //    completed_replicas so broadcast origins can still complete.
+  for (auto it = send_in_retry_.begin(); it != send_in_retry_.end();) {
+    if (it->target_node_id == node_id) {
+      size_t net_key = it->task->task_id_.net_key_;
+      auto send_it = send_map_.find(net_key);
+      if (send_it != nullptr) {
+        auto &origin = *send_it;
+        if (origin->run_ctx_) {
+          origin->run_ctx_->completed_replicas_++;
+        }
+      }
+      HLOG(kInfo,
+           "[FlushStale] Discarding SendIn retry for restarted node {}",
+           node_id);
+      it = send_in_retry_.erase(it);
+    } else {
+      ++it;
+    }
+  }
+
+  // 2. Discard send_out retry entries targeting this node.
+  //    These are responses destined for the old incarnation; drop them.
+  for (auto it = send_out_retry_.begin(); it != send_out_retry_.end();) {
+    if (it->target_node_id == node_id) {
+      HLOG(kInfo,
+           "[FlushStale] Discarding SendOut retry for restarted node {}",
+           node_id);
+      it = send_out_retry_.erase(it);
+    } else {
+      ++it;
+    }
+  }
+}
+
 chi::TaskResume Runtime::Heartbeat(hipc::FullPtr<HeartbeatTask> task,
                                    chi::RunContext &rctx) {
   task->SetReturnCode(0);
@@ -2354,6 +2456,27 @@ chi::TaskResume Runtime::ProbeRequest(hipc::FullPtr<ProbeRequestTask> task,
   co_return;
 }
 
+chi::TaskStat Runtime::GetTaskStats(chi::u32 method_id) const {
+  switch (method_id) {
+    case Method::kSend:
+    case Method::kRecv:
+    case Method::kClientRecv:
+    case Method::kClientSend: {
+      chi::TaskStat stat;
+      auto *net_queue = CHI_IPC->GetNetQueue();
+      size_t total = 0;
+      if (net_queue) {
+        for (chi::u32 p = 0; p < 4; ++p)
+          total += net_queue->GetLane(0, p).Size();
+      }
+      stat.compute_ = total;
+      stat.io_size_ = 1024 * 1024;
+      return stat;
+    }
+    default: return chi::TaskStat();
+  }
+}
+
 chi::u64 Runtime::GetWorkRemaining() const {
   // Note: No lock needed - single net worker processes all Send/Recv tasks
   return send_map_.size() + recv_map_.size();
@@ -2428,7 +2551,7 @@ chi::TaskResume Runtime::TriggerRecovery(chi::u64 dead_node_id) {
 
   HLOG(kInfo, "Recovery: {} containers to redistribute from node {}",
        assignments.size(), dead_node_id);
-  co_await client_.AsyncRecoverContainers(chi::PoolQuery::Broadcast(),
+  co_await client_.AsyncRecoverContainers(chi::PoolQuery::Broadcast(0),
                                           assignments, dead_node_id);
 }
 

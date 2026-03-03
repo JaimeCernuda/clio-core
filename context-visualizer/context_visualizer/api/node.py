@@ -76,9 +76,9 @@ def get_node_workers(node_id):
         "workers": workers,
         "summary": {
             "count": len(workers),
-            "queued": sum(w.get("queued", 0) for w in workers),
-            "blocked": sum(w.get("blocked", 0) for w in workers),
-            "processed": sum(w.get("processed", 0) for w in workers),
+            "queued": sum(w.get("num_queued_tasks", 0) for w in workers),
+            "blocked": sum(w.get("num_blocked_tasks", 0) for w in workers),
+            "processed": sum(w.get("num_tasks_processed", 0) for w in workers),
         },
     })
 
@@ -102,6 +102,29 @@ def get_node_system_stats(node_id):
             entries.append(data)
 
     return jsonify({"entries": entries})
+
+
+@bp.route("/node/<int:node_id>/container_stats")
+def get_node_container_stats(node_id):
+    if not _node_is_alive(node_id):
+        return jsonify({"error": "node_down", "containers": []}), 503
+
+    try:
+        if node_id == 0:
+            raw = chimaera_client.get_container_stats("local")
+        else:
+            raw = chimaera_client.get_container_stats_for_node(node_id)
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 503
+
+    containers = []
+    for _cid, data in raw.items():
+        if isinstance(data, list):
+            containers.extend(data)
+        elif isinstance(data, dict):
+            containers.append(data)
+
+    return jsonify({"containers": containers})
 
 
 @bp.route("/node/<int:node_id>/bdev_stats")
