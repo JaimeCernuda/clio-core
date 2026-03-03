@@ -248,6 +248,9 @@ public:
   /** Monitor sub-handler: collect per-worker statistics. */
   void MonitorWorkerStats(hipc::FullPtr<MonitorTask> task);
 
+  /** Monitor sub-handler: return per-container model statistics. */
+  void MonitorContainerStats(hipc::FullPtr<MonitorTask> task);
+
   /** Monitor sub-handler: delegate query to a specific pool. */
   chi::TaskResume MonitorPoolStats(hipc::FullPtr<MonitorTask> task);
 
@@ -347,6 +350,12 @@ public:
   void RecvOut(hipc::FullPtr<RecvTask> task, chi::LoadTaskArchive& archive, hshm::lbm::Transport* lbm_transport);
 
   /**
+   * Get live task statistics per method.
+   * For network methods, compute = total queue depth across priorities.
+   */
+  chi::TaskStat GetTaskStats(chi::u32 method_id) const override;
+
+  /**
    * Get remaining work count for this admin container
    * Admin container typically has no pending work, returns 0
    */
@@ -431,6 +440,13 @@ public:
    * Scan send_map_ for tasks waiting on dead nodes and time them out
    */
   void ScanSendMapTimeouts();
+
+  /**
+   * Flush stale retry-queue entries and send_map origins targeting a node
+   * that is about to be marked alive (restarted). Old tasks from the
+   * previous incarnation must not be resent to a fresh runtime.
+   */
+  void FlushStaleStateForNode(chi::u64 node_id);
 
 private:
   /**
