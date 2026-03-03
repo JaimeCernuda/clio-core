@@ -16,7 +16,7 @@ import asyncio
 import os
 import sys
 
-import claude_agent_sdk
+import claude_code_sdk
 
 
 async def run_single_agent(
@@ -31,9 +31,9 @@ async def run_single_agent(
     print(f"  [{session_id}] ANTHROPIC_BASE_URL={env_url}")
 
     try:
-        async for msg in claude_agent_sdk.query(
+        async for msg in claude_code_sdk.query(
             prompt=prompt,
-            options=claude_agent_sdk.ClaudeAgentOptions(
+            options=claude_code_sdk.ClaudeCodeOptions(
                 model="claude-sonnet-4-6",
                 permission_mode="bypassPermissions",
                 max_turns=3,

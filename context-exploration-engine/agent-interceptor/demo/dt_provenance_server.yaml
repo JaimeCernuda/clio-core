@@ -2,7 +2,7 @@
 # Complete runtime config: base Chimaera + DTProvenance ChiMods
 
 networking:
-  port: 9413
+  port: 9513
 
 runtime:
   num_threads: 4
