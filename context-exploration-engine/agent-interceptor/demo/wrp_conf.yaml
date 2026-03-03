@@ -1,0 +1,35 @@
+# DTProvenance compose configuration
+# Starts all ChiMods for the agent interception pipeline.
+#
+# Usage: ./dt_demo_server --config demo/wrp_conf.yaml
+
+compose:
+  # HTTP Proxy — receives agent requests on port 9090
+  - mod_name: dt_proxy
+    pool_id: "800.0"
+    config: |
+      port: 9090
+      num_threads: 8
+
+  # Anthropic Interception — forwards to api.anthropic.com
+  - mod_name: dt_intercept_anthropic
+    pool_id: "801.0"
+    config: |
+      upstream_base_url: "https://api.anthropic.com"
+
+  # OpenAI Interception — forwards to api.openai.com
+  - mod_name: dt_intercept_openai
+    pool_id: "802.0"
+    config: |
+      upstream_base_url: "https://api.openai.com"
+
+  # Ollama Interception — forwards to local Ollama instance
+  - mod_name: dt_intercept_ollama
+    pool_id: "803.0"
+    config: |
+      upstream_base_url: "http://localhost:11434"
+
+  # Conversation Tracker — stores interactions in CTE
+  - mod_name: dt_tracker
+    pool_id: "810.0"
+    config: |

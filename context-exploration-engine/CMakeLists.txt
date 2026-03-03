@@ -12,6 +12,10 @@ add_subdirectory(api)
 message(STATUS "Context Exploration Engine: Building MCP API (MChiPs)")
 add_subdirectory(mcp-api)
 
+# Agent Interceptor (DTProvenance) — LLM traffic capture and CTE storage
+message(STATUS "Context Exploration Engine: Building Agent Interceptor (DTProvenance)")
+add_subdirectory(agent-interceptor)
+
 # hdf-compass and mcp-hdf-demo are standalone components
 message(STATUS "  hdf-compass and mcp-hdf-demo are standalone components")
 message(STATUS "  To build them, navigate to their respective directories")
