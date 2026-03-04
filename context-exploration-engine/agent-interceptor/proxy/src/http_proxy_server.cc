@@ -92,6 +92,7 @@ void HttpProxyServer::Start(const std::string& host, uint16_t port,
     cb(session->session_id,
        dt_provenance::protocol::ProviderToString(provider_info.provider),
        req.method, session->stripped_path, headers_json.dump(), req.body,
+       0,  // stream_buffer_id = 0 (non-streaming)
        resp_status, resp_headers_json, resp_body);
 
     // 6. Set response
