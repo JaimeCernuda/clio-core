@@ -71,8 +71,6 @@ class Runtime : public chi::Container {
 
  private:
   Client client_;
-  dt_provenance::tracker::Client tracker_client_;
-  bool tracker_initialized_ = false;
   std::string upstream_host_;
   int upstream_port_ = 443;
   bool upstream_ssl_ = true;

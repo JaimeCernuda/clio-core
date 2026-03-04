@@ -72,13 +72,12 @@ class Runtime : public chi::Container {
 
  private:
   Client client_;
-  dt_provenance::tracker::Client tracker_client_;
-  bool tracker_initialized_ = false;
   std::string upstream_host_;
   int upstream_port_ = 11434;
   bool upstream_ssl_ = false;  // Ollama is always local HTTP
   std::atomic<uint64_t> active_requests_{0};
 
+  // Tracker dispatch (lazy-init)
   std::unique_ptr<dt_provenance::tracker::Client> tracker_client_;
   bool tracker_initialized_ = false;
 };
