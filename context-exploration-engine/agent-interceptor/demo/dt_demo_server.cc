@@ -13,6 +13,7 @@
 #include <chimaera/chimaera.h>
 #include <csignal>
 #include <iostream>
+#include <thread>
 
 static volatile bool running = true;
 

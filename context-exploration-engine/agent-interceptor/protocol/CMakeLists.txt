@@ -19,6 +19,7 @@ add_library(dt_protocol SHARED
   src/ollama_parser.cc
   src/stream_reassembly.cc
   src/cost_estimator.cc
+  src/stream_buffer.cc
 )
 
 add_library(dt_provenance::protocol ALIAS dt_protocol)
@@ -29,9 +30,12 @@ target_include_directories(dt_protocol
     $<INSTALL_INTERFACE:include>
 )
 
+find_package(Threads REQUIRED)
+
 target_link_libraries(dt_protocol
   PUBLIC
     $<BUILD_INTERFACE:nlohmann_json::nlohmann_json>
+    Threads::Threads
 )
 
 set_target_properties(dt_protocol PROPERTIES

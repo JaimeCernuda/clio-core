@@ -8,6 +8,7 @@
 #include "anthropic_client.h"
 #include "anthropic_tasks.h"
 #include "autogen/dt_intercept_anthropic_methods.h"
+#include "dt_provenance/tracker/tracker_client.h"
 
 namespace httplib {
 class SSLClient;
@@ -70,6 +71,8 @@ class Runtime : public chi::Container {
 
  private:
   Client client_;
+  dt_provenance::tracker::Client tracker_client_;
+  bool tracker_initialized_ = false;
   std::string upstream_host_;
   int upstream_port_ = 443;
   bool upstream_ssl_ = true;

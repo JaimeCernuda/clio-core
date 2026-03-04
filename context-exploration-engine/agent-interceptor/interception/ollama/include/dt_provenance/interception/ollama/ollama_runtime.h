@@ -8,6 +8,7 @@
 #include "ollama_client.h"
 #include "ollama_tasks.h"
 #include "autogen/dt_intercept_ollama_methods.h"
+#include "dt_provenance/tracker/tracker_client.h"
 
 namespace httplib {
 class Client;
@@ -71,6 +72,8 @@ class Runtime : public chi::Container {
 
  private:
   Client client_;
+  dt_provenance::tracker::Client tracker_client_;
+  bool tracker_initialized_ = false;
   std::string upstream_host_;
   int upstream_port_ = 11434;
   bool upstream_ssl_ = false;  // Ollama is always local HTTP

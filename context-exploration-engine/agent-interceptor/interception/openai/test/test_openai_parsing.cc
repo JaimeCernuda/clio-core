@@ -114,20 +114,19 @@ TEST_CASE("OpenAI streaming with tool_calls", "[openai][integration]") {
   InteractionRecord record;
 
   // First chunk with tool call start
-  json chunk1 = {
-      {"model", "gpt-4o"},
-      {"choices",
-       json::array({json{
-           {"index", 0},
-           {"delta",
-            {{"tool_calls",
-              json::array({json{{"index", 0},
-                                {"id", "call_abc"},
-                                {"type", "function"},
-                                {"function",
-                                 {{"name", "get_weather"},
-                                  {"arguments", "{\"loc"}}}}}})}}},
-           {"finish_reason", nullptr}}})}};
+  json chunk1 = json::parse(R"({
+    "model": "gpt-4o",
+    "choices": [{
+      "index": 0,
+      "delta": {
+        "tool_calls": [{
+          "index": 0, "id": "call_abc", "type": "function",
+          "function": {"name": "get_weather", "arguments": "{\"loc"}
+        }]
+      },
+      "finish_reason": null
+    }]
+  })");
   OpenAIParser::ParseStreamChunk(chunk1, record);
 
   REQUIRE(record.response.tool_calls.size() == 1);
@@ -135,17 +134,19 @@ TEST_CASE("OpenAI streaming with tool_calls", "[openai][integration]") {
   REQUIRE(record.response.tool_calls[0].id == "call_abc");
 
   // Second chunk with argument continuation
-  json chunk2 = {
-      {"model", "gpt-4o"},
-      {"choices",
-       json::array({json{
-           {"index", 0},
-           {"delta",
-            {{"tool_calls",
-              json::array({json{{"index", 0},
-                                {"function",
-                                 {{"arguments", "ation\": \"NYC\"}"}}}}})}}},
-           {"finish_reason", nullptr}}})}};
+  json chunk2 = json::parse(R"({
+    "model": "gpt-4o",
+    "choices": [{
+      "index": 0,
+      "delta": {
+        "tool_calls": [{
+          "index": 0,
+          "function": {"arguments": "ation\": \"NYC\"}"}
+        }]
+      },
+      "finish_reason": null
+    }]
+  })");
   OpenAIParser::ParseStreamChunk(chunk2, record);
 
   // Finalize tool call arguments

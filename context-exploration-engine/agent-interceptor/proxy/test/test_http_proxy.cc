@@ -15,7 +15,8 @@ TEST_CASE("HttpProxyServer starts and stops cleanly", "[proxy]") {
   server.Start("127.0.0.1", 0, 2,
                [&](const std::string&, const std::string&,
                    const std::string&, const std::string&,
-                   const std::string&, const std::string&, int& status,
+                   const std::string&, const std::string&,
+                   uint64_t, int& status,
                    std::string& headers, std::string& body) {
                  called = true;
                  status = 200;
@@ -42,7 +43,7 @@ TEST_CASE("HttpProxyServer routes request with session to callback",
                [&](const std::string& session_id, const std::string& provider,
                    const std::string& method, const std::string& path,
                    const std::string& headers_json, const std::string& body,
-                   int& resp_status, std::string& resp_headers,
+                   uint64_t, int& resp_status, std::string& resp_headers,
                    std::string& resp_body) {
                  captured_session = session_id;
                  captured_provider = provider;
@@ -76,8 +77,8 @@ TEST_CASE("HttpProxyServer returns rejection for missing session", "[proxy]") {
   server.Start("127.0.0.1", 19092, 2,
                [&](const std::string&, const std::string&,
                    const std::string&, const std::string&,
-                   const std::string&, const std::string&, int&,
-                   std::string&, std::string&) {
+                   const std::string&, const std::string&,
+                   uint64_t, int&, std::string&, std::string&) {
                  callback_called = true;
                });
 
@@ -107,7 +108,8 @@ TEST_CASE("HttpProxyServer increments request counter", "[proxy]") {
   server.Start("127.0.0.1", 19093, 2,
                [](const std::string&, const std::string&,
                   const std::string&, const std::string&,
-                  const std::string&, const std::string&, int& status,
+                  const std::string&, const std::string&,
+                  uint64_t, int& status,
                   std::string& headers, std::string& body) {
                  status = 200;
                  headers = "{}";
