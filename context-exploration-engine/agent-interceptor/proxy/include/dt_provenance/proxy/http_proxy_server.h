@@ -31,6 +31,7 @@ using ForwardCallback = std::function<void(
     const std::string& session_id, const std::string& provider_name,
     const std::string& method, const std::string& path,
     const std::string& headers_json, const std::string& body,
+    uint64_t stream_buffer_id,  // 0 = non-streaming
     int& resp_status, std::string& resp_headers, std::string& resp_body)>;
 
 /**

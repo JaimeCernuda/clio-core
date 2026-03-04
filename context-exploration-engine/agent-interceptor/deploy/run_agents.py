@@ -1,3 +1,7 @@
+# /// script
+# requires-python = ">=3.10"
+# dependencies = ["claude-agent-sdk"]
+# ///
 """Run Claude agents through the DTProvenance proxy.
 
 Each agent gets a unique session ID and prompt.
@@ -12,11 +16,14 @@ Usage:
 """
 
 import argparse
-import asyncio
 import os
 import sys
 
-import claude_code_sdk
+import anyio
+from claude_agent_sdk import query, ClaudeAgentOptions, AssistantMessage, TextBlock
+
+# Allow launching Claude Code from within an existing session (e.g., srun from Claude Code)
+os.environ.pop("CLAUDECODE", None)
 
 
 async def run_single_agent(
@@ -31,21 +38,23 @@ async def run_single_agent(
     print(f"  [{session_id}] ANTHROPIC_BASE_URL={env_url}")
 
     try:
-        async for msg in claude_code_sdk.query(
+        async for msg in query(
             prompt=prompt,
-            options=claude_code_sdk.ClaudeCodeOptions(
+            options=ClaudeAgentOptions(
                 model="claude-sonnet-4-6",
                 permission_mode="bypassPermissions",
                 max_turns=3,
             ),
         ):
-            msg_type = type(msg).__name__
-            if msg_type == "ResultMessage":
-                print(f"  [{session_id}] Complete")
-            elif msg_type == "AssistantMessage":
-                # Truncate long messages
-                text = str(msg)[:100]
-                print(f"  [{session_id}] Assistant: {text}...")
+            if isinstance(msg, AssistantMessage):
+                for block in msg.content:
+                    if isinstance(block, TextBlock):
+                        text = block.text[:100]
+                        print(f"  [{session_id}] Assistant: {text}...")
+            else:
+                msg_type = type(msg).__name__
+                if msg_type == "ResultMessage":
+                    print(f"  [{session_id}] Complete")
     except Exception as e:
         print(f"  [{session_id}] Error: {e}", file=sys.stderr)
         raise
@@ -75,5 +84,4 @@ async def main() -> None:
     print("All agents completed.")
 
 
-if __name__ == "__main__":
-    asyncio.run(main())
+anyio.run(main)

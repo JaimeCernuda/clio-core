@@ -1,13 +1,17 @@
 #include "dt_provenance/interception/ollama/ollama_runtime.h"
 
 #include <chrono>
+#include <thread>
 #include <nlohmann/json.hpp>
 
 #include <httplib.h>
 
+#include <chimaera/pool_manager.h>
+
 #include "dt_provenance/protocol/cost_estimator.h"
 #include "dt_provenance/protocol/interaction.h"
 #include "dt_provenance/protocol/ollama_parser.h"
+#include "dt_provenance/protocol/stream_buffer.h"
 #include "dt_provenance/protocol/stream_reassembly.h"
 
 namespace dt_provenance::interception::ollama {
@@ -61,10 +65,20 @@ chi::TaskResume Runtime::Create(hipc::FullPtr<CreateTask> task,
 
 chi::TaskResume Runtime::InterceptAndForward(
     hipc::FullPtr<InterceptAndForwardTask> task, chi::RunContext& rctx) {
+  // Lazy-init tracker client (tracker pool may not exist during Create())
+  if (!tracker_initialized_) {
+    auto* pool_mgr = CHI_POOL_MANAGER;
+    chi::PoolId tracker_pool = pool_mgr->FindPoolByName("dt_tracker_pool");
+    if (!tracker_pool.IsNull()) {
+      tracker_client_.Init(tracker_pool);
+      tracker_initialized_ = true;
+    }
+  }
+
   active_requests_.fetch_add(1);
   auto start = std::chrono::steady_clock::now();
 
-  // Extract task fields
+  // Extract task fields (local copies — safe after co_return)
   std::string session_id(task->session_id_.str());
   std::string path(task->path_.str());
   std::string headers_json_str(task->headers_json_.str());
@@ -78,7 +92,7 @@ chi::TaskResume Runtime::InterceptAndForward(
     request_headers = json::object();
   }
 
-  // 1. Create httplib client for this request (Ollama is typically plain HTTP)
+  // 1. Create httplib headers
   httplib::Headers hdr;
   for (auto& [k, v] : request_headers.items()) {
     if (v.is_string()) {
@@ -86,14 +100,156 @@ chi::TaskResume Runtime::InterceptAndForward(
     }
   }
 
+  // Check for streaming via StreamBuffer registry
+  using dt_provenance::protocol::StreamBufferRegistry;
+  auto stream_buf = StreamBufferRegistry::Instance().Get(task->request_time_ns_);
+  bool is_streaming = (stream_buf != nullptr);
+
+  if (is_streaming) {
+    // Offload the blocking HTTP call to a detached thread so the Chimaera
+    // cooperative worker returns immediately and can process other tasks.
+    std::thread([this,
+                 session_id = std::move(session_id),
+                 path = std::move(path),
+                 request_headers = std::move(request_headers),
+                 request_body = std::move(request_body),
+                 hdr = std::move(hdr),
+                 stream_buf = std::move(stream_buf),
+                 start]() {
+      std::string response_body;
+      int response_status = 502;
+      httplib::Headers response_headers;
+      double ttft_ms = 0;
+
+      httplib::Request http_req;
+      http_req.method = "POST";
+      http_req.path = path;
+      http_req.headers = hdr;
+      http_req.body = request_body;
+      http_req.headers.emplace("Content-Type", "application/json");
+
+      bool first_chunk = true;
+
+      http_req.response_handler = [&](const httplib::Response& resp) -> bool {
+        response_status = resp.status;
+        response_headers = resp.headers;
+        json rh = json::object();
+        for (const auto& [k, v] : resp.headers) rh[k] = v;
+        stream_buf->SetResponseHeaders(resp.status, rh.dump());
+        return true;
+      };
+
+      http_req.content_receiver =
+          [&](const char* data, size_t len, uint64_t, uint64_t) -> bool {
+        if (first_chunk) {
+          ttft_ms = std::chrono::duration<double, std::milli>(
+              std::chrono::steady_clock::now() - start).count();
+          first_chunk = false;
+        }
+        stream_buf->PushChunk(std::string(data, len));
+        return true;
+      };
+
+      // Ollama is almost always plain HTTP (local server)
+      httplib::Client cli(upstream_host_, upstream_port_);
+      cli.set_connection_timeout(30);
+      cli.set_read_timeout(600);  // Local models can be very slow on first load
+      auto result = cli.send(http_req);
+      if (!result)
+        stream_buf->SetError(502, R"({"error":"upstream connection failed"})");
+
+      stream_buf->Complete();
+      response_body = stream_buf->GetCollectedBody();
+
+      auto end = std::chrono::steady_clock::now();
+      double latency_ms =
+          std::chrono::duration<double, std::milli>(end - start).count();
+
+      // Parse interaction and dispatch to tracker
+      if (response_status >= 200 && response_status < 300) {
+        InteractionRecord record;
+        record.session_id = session_id;
+        record.provider = Provider::kOllama;
+        record.request.method = "POST";
+        record.request.path = path;
+        record.request.headers = request_headers;
+
+        try {
+          auto req_body = json::parse(request_body);
+          OllamaParser::ParseRequest(req_body, path, record);
+        } catch (const json::parse_error&) {}
+
+        json resp_hdrs_json = json::object();
+        for (const auto& [k, v] : response_headers) {
+          resp_hdrs_json[k] = v;
+        }
+
+        // Detect streaming response — Ollama uses NDJSON
+        bool is_ndjson = false;
+        if (resp_hdrs_json.contains("content-type")) {
+          std::string ct = resp_hdrs_json["content-type"].get<std::string>();
+          is_ndjson = ct.find("application/x-ndjson") != std::string::npos;
+        }
+        if (!is_ndjson) {
+          try {
+            auto req_body = json::parse(request_body);
+            is_ndjson = req_body.value("stream", true);
+          } catch (const json::parse_error&) {}
+        }
+
+        if (is_ndjson) {
+          record.response.is_streaming = true;
+          auto chunks = ReassembleNDJSON(response_body);
+          for (const auto& chunk : chunks) {
+            OllamaParser::ParseStreamChunk(chunk, path, record);
+          }
+        } else {
+          record.response.is_streaming = false;
+          try {
+            auto resp_body = json::parse(response_body);
+            OllamaParser::ParseResponse(resp_body, path, record);
+          } catch (const json::parse_error&) {}
+        }
+
+        TokenUsage usage;
+        usage.input_tokens = record.metrics.input_tokens;
+        usage.output_tokens = record.metrics.output_tokens;
+        auto cost =
+            CostEstimator::Estimate(Provider::kOllama, record.model, usage);
+        record.metrics.cost_usd = cost.total_cost;
+        record.metrics.total_latency_ms = latency_ms;
+        record.metrics.time_to_first_token_ms = ttft_ms;
+
+        record.response.status_code = response_status;
+
+        json interaction_json = record.ToJson();
+        std::string interaction_str = interaction_json.dump();
+        HLOG(kInfo,
+             "Dispatching to tracker: session={} model={} in={} out={} "
+             "latency={}ms",
+             session_id, record.model, record.metrics.input_tokens,
+             record.metrics.output_tokens, latency_ms);
+
+        if (tracker_initialized_) {
+          auto tracker_future = tracker_client_.AsyncStoreInteraction(
+              chi::PoolQuery::Local(), interaction_str);
+          tracker_future.Wait();
+        }
+      }
+
+      active_requests_.fetch_sub(1);
+    }).detach();
+    co_return;
+  }
+
+  // --- NON-STREAMING PATH ---
   std::string response_body;
   int response_status = 502;
   httplib::Headers response_headers;
 
-  // Ollama is almost always plain HTTP (local server)
   httplib::Client cli(upstream_host_, upstream_port_);
   cli.set_connection_timeout(30);
-  cli.set_read_timeout(600);  // Local models can be very slow on first load
+  cli.set_read_timeout(600);
 
   auto res = cli.Post(path, hdr, request_body, "application/json");
   if (res) {
@@ -106,10 +262,10 @@ chi::TaskResume Runtime::InterceptAndForward(
   double latency_ms =
       std::chrono::duration<double, std::milli>(end - start).count();
 
-  // 2. Set OUT fields so the proxy can return the response immediately
+  // 2. Set OUT fields
   task->response_status_ = response_status;
   task->latency_ms_ = latency_ms;
-  task->ttft_ms_ = latency_ms;  // For non-streaming; TODO: measure TTFT for NDJSON
+  task->ttft_ms_ = latency_ms;
 
   // Serialize response headers
   json resp_hdrs_json = json::object();
@@ -119,7 +275,7 @@ chi::TaskResume Runtime::InterceptAndForward(
   task->response_headers_json_ = resp_hdrs_json.dump();
   task->response_body_ = response_body;
 
-  // 3. Parse interaction asynchronously
+  // 3. Parse interaction
   if (response_status >= 200 && response_status < 300) {
     InteractionRecord record;
     record.session_id = session_id;
@@ -135,15 +291,12 @@ chi::TaskResume Runtime::InterceptAndForward(
     } catch (const json::parse_error&) {
     }
 
-    // Detect streaming response — Ollama uses NDJSON (application/x-ndjson)
-    // or plain application/json with newline-delimited objects
+    // Detect streaming response
     bool is_ndjson = false;
     if (resp_hdrs_json.contains("content-type")) {
       std::string ct = resp_hdrs_json["content-type"].get<std::string>();
       is_ndjson = ct.find("application/x-ndjson") != std::string::npos;
     }
-    // Ollama also streams with application/json but multiple JSON objects
-    // separated by newlines. Detect by checking if stream was requested.
     if (!is_ndjson) {
       try {
         auto req_body = json::parse(request_body);
@@ -176,16 +329,24 @@ chi::TaskResume Runtime::InterceptAndForward(
         CostEstimator::Estimate(Provider::kOllama, record.model, usage);
     record.metrics.cost_usd = cost.total_cost;
     record.metrics.total_latency_ms = latency_ms;
-    record.metrics.time_to_first_token_ms = latency_ms;  // TODO
+    record.metrics.time_to_first_token_ms = latency_ms;
 
     record.response.status_code = response_status;
 
-    // 4. Dispatch to Tracker (Phase 4 wires this up)
+    // 4. Dispatch to Tracker
+    json interaction_json = record.ToJson();
+    std::string interaction_str = interaction_json.dump();
     HLOG(kInfo,
-         "Ollama interaction captured: session={} model={} "
-         "in_tokens={} out_tokens={} latency={:.1f}ms",
+         "Dispatching to tracker: session={} model={} in={} out={} "
+         "latency={}ms",
          session_id, record.model, record.metrics.input_tokens,
          record.metrics.output_tokens, latency_ms);
+
+    if (tracker_initialized_) {
+      auto tracker_future = tracker_client_.AsyncStoreInteraction(
+          chi::PoolQuery::Local(), interaction_str);
+      tracker_future.Wait();
+    }
   }
 
   active_requests_.fetch_sub(1);

@@ -8,6 +8,10 @@
 #include "proxy_tasks.h"
 #include "autogen/dt_proxy_methods.h"
 
+#include "dt_provenance/interception/anthropic/anthropic_client.h"
+#include "dt_provenance/interception/openai/openai_client.h"
+#include "dt_provenance/interception/ollama/ollama_client.h"
+
 namespace dt_provenance::proxy {
 
 /**
@@ -62,6 +66,10 @@ class Runtime : public chi::Container {
  private:
   Client client_;
   HttpProxyServer http_server_;
+  interception::anthropic::Client anthropic_client_;
+  interception::openai::Client openai_client_;
+  interception::ollama::Client ollama_client_;
+  bool clients_initialized_ = false;
 };
 
 }  // namespace dt_provenance::proxy

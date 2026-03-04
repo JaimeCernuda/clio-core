@@ -1,10 +1,13 @@
 #include "dt_provenance/proxy/http_proxy_server.h"
 
+#include <thread>
+
 #include <httplib.h>
 #include <nlohmann/json.hpp>
 
 #include "dt_provenance/protocol/provider.h"
 #include "dt_provenance/protocol/session.h"
+#include "dt_provenance/protocol/stream_buffer.h"
 #include "dt_provenance/proxy/session_guard.h"
 
 namespace dt_provenance::proxy {
@@ -83,45 +86,108 @@ void HttpProxyServer::Start(const std::string& host, uint16_t port,
       }
     }
 
-    // 5. Dispatch to interception ChiMod via callback
-    int resp_status = 502;
-    std::string resp_headers_json;
-    std::string resp_body;
+    // 5. Detect streaming request
+    bool is_streaming_request = false;
+    try {
+      auto body_json = json::parse(req.body);
+      is_streaming_request = body_json.value("stream", false);
+    } catch (...) {}
 
-    cb(session->session_id,
-       dt_provenance::protocol::ProviderToString(provider_info.provider),
-       req.method, session->stripped_path, headers_json.dump(), req.body,
-       resp_status, resp_headers_json, resp_body);
+    if (is_streaming_request) {
+      // --- STREAMING PATH ---
+      using namespace dt_provenance::protocol;
+      auto [buf_id, stream_buf] = StreamBufferRegistry::Instance().Create();
 
-    // 6. Set response
-    res.status = resp_status;
+      // Launch ChiMod dispatch on background thread
+      std::thread([cb,
+                   sid = session->session_id,
+                   prov = dt_provenance::protocol::ProviderToString(
+                       provider_info.provider),
+                   meth = req.method,
+                   p = session->stripped_path,
+                   hdrs = headers_json.dump(),
+                   b = req.body,
+                   buf_id]() {
+        int ds = 0;
+        std::string dh, db;
+        cb(sid, prov, meth, p, hdrs, b, buf_id, ds, dh, db);
+      }).detach();
 
-    // Parse and set response headers
-    if (!resp_headers_json.empty()) {
-      try {
-        auto resp_hdrs = json::parse(resp_headers_json);
-        for (auto& [k, v] : resp_hdrs.items()) {
-          if (v.is_string()) {
-            res.set_header(k, v.get<std::string>());
+      // Wait for upstream response headers from ChiMod
+      auto [status, resp_hdrs_json] = stream_buf->WaitForHeaders();
+      res.status = status;
+
+      // Apply response headers (filter hop-by-hop)
+      std::string content_type = "application/json";
+      if (!resp_hdrs_json.empty()) {
+        try {
+          auto hdrs = json::parse(resp_hdrs_json);
+          for (auto& [k, v] : hdrs.items()) {
+            if (v.is_string() && !IsHopByHop(k))
+              res.set_header(k, v.get<std::string>());
           }
-        }
-      } catch (const json::parse_error&) {
-        // Ignore malformed headers
+          if (hdrs.contains("content-type"))
+            content_type = hdrs["content-type"].get<std::string>();
+        } catch (...) {}
       }
-    }
 
-    // Determine content type from response headers or default
-    std::string content_type = "application/json";
-    if (!resp_headers_json.empty()) {
-      try {
-        auto resp_hdrs = json::parse(resp_headers_json);
-        if (resp_hdrs.contains("content-type")) {
-          content_type = resp_hdrs["content-type"].get<std::string>();
-        }
-      } catch (const json::parse_error&) {}
-    }
+      // Stream chunks via chunked content provider
+      auto buf_ptr = stream_buf;
+      auto cleanup_id = buf_id;
+      res.set_chunked_content_provider(
+          content_type,
+          [buf_ptr](size_t /*offset*/, httplib::DataSink& sink) -> bool {
+            auto [chunk, done] = buf_ptr->PopChunk();
+            if (!chunk.empty()) sink.write(chunk.data(), chunk.size());
+            if (done) {
+              sink.done();
+              return false;
+            }
+            return true;
+          },
+          [cleanup_id](bool /*success*/) {
+            StreamBufferRegistry::Instance().Remove(cleanup_id);
+          });
 
-    res.set_content(resp_body, content_type);
+    } else {
+      // --- NON-STREAMING PATH ---
+      int resp_status = 502;
+      std::string resp_headers_json;
+      std::string resp_body;
+
+      cb(session->session_id,
+         dt_provenance::protocol::ProviderToString(provider_info.provider),
+         req.method, session->stripped_path, headers_json.dump(), req.body,
+         0,  // non-streaming
+         resp_status, resp_headers_json, resp_body);
+
+      res.status = resp_status;
+
+      // Parse and set response headers
+      if (!resp_headers_json.empty()) {
+        try {
+          auto resp_hdrs = json::parse(resp_headers_json);
+          for (auto& [k, v] : resp_hdrs.items()) {
+            if (v.is_string() && !IsHopByHop(k)) {
+              res.set_header(k, v.get<std::string>());
+            }
+          }
+        } catch (const json::parse_error&) {}
+      }
+
+      // Determine content type from response headers or default
+      std::string content_type = "application/json";
+      if (!resp_headers_json.empty()) {
+        try {
+          auto resp_hdrs = json::parse(resp_headers_json);
+          if (resp_hdrs.contains("content-type")) {
+            content_type = resp_hdrs["content-type"].get<std::string>();
+          }
+        } catch (const json::parse_error&) {}
+      }
+
+      res.set_content(resp_body, content_type);
+    }
   };
 
   // Register catch-all for common HTTP methods

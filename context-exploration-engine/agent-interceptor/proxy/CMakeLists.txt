@@ -49,6 +49,9 @@ add_chimod_runtime(
   LINK_LIBRARIES
     chimaera_admin_runtime
     $<BUILD_INTERFACE:dt_proxy_http>
+    $<BUILD_INTERFACE:dt_provenance_dt_intercept_anthropic_client>
+    $<BUILD_INTERFACE:dt_provenance_dt_intercept_openai_client>
+    $<BUILD_INTERFACE:dt_provenance_dt_intercept_ollama_client>
 )
 
 # Tests

@@ -23,6 +23,7 @@ add_chimod_runtime(
     $<BUILD_INTERFACE:dt_protocol>
     $<BUILD_INTERFACE:httplib::httplib>
     $<BUILD_INTERFACE:nlohmann_json::nlohmann_json>
+    $<BUILD_INTERFACE:dt_provenance_dt_tracker_client>
 )
 
 # Tests

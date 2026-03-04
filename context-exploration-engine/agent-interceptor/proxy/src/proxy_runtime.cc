@@ -1,5 +1,9 @@
 #include "dt_provenance/proxy/proxy_runtime.h"
 
+#include <chrono>
+
+#include <chimaera/pool_manager.h>
+
 #include "dt_provenance/protocol/provider.h"
 
 namespace dt_provenance::proxy {
@@ -20,21 +24,76 @@ chi::TaskResume Runtime::Create(hipc::FullPtr<CreateTask> task,
       [this](const std::string& session_id, const std::string& provider_name,
              const std::string& method, const std::string& path,
              const std::string& headers_json, const std::string& body,
+             uint64_t stream_buffer_id,
              int& resp_status, std::string& resp_headers,
              std::string& resp_body) {
-        // This runs on httplib worker threads, NOT Chimaera coroutines.
-        // For Phase 2 we just return 502 — Phase 3 wires up the
-        // interception ChiMod dispatch.
-        (void)this;
-        (void)session_id;
-        (void)provider_name;
-        (void)method;
-        (void)path;
-        (void)headers_json;
-        (void)body;
-        resp_status = 502;
-        resp_headers = "{}";
-        resp_body = R"({"error":"interception not yet wired"})";
+        // Lazy-init: discover interception pools on first request
+        // (pools may not exist yet during Create() due to compose ordering)
+        if (!clients_initialized_) {
+          auto* pool_mgr = CHI_POOL_MANAGER;
+          chi::PoolId anthropic_pool =
+              pool_mgr->FindPoolByName("dt_intercept_anthropic_pool");
+          chi::PoolId openai_pool =
+              pool_mgr->FindPoolByName("dt_intercept_openai_pool");
+          chi::PoolId ollama_pool =
+              pool_mgr->FindPoolByName("dt_intercept_ollama_pool");
+
+          if (!anthropic_pool.IsNull()) {
+            anthropic_client_.Init(anthropic_pool);
+          }
+          if (!openai_pool.IsNull()) {
+            openai_client_.Init(openai_pool);
+          }
+          if (!ollama_pool.IsNull()) {
+            ollama_client_.Init(ollama_pool);
+          }
+          clients_initialized_ = true;
+        }
+
+        // Repurpose request_time_ns_ as StreamBuffer ID.
+        // When stream_buffer_id > 0, the ChiMod streams via StreamBuffer.
+        // When 0, use a real timestamp for the buffered path.
+        chi::u64 now_ns = stream_buffer_id;
+        if (now_ns == 0) {
+          now_ns = static_cast<chi::u64>(
+              std::chrono::duration_cast<std::chrono::nanoseconds>(
+                  std::chrono::steady_clock::now().time_since_epoch()).count());
+        }
+
+        chi::PoolQuery local_query = chi::PoolQuery::Local();
+
+        if (provider_name == "anthropic") {
+          auto future = anthropic_client_.AsyncInterceptAndForward(
+              local_query, session_id, path, headers_json, body, now_ns);
+          future.Wait();
+          if (stream_buffer_id == 0) {
+            resp_status = future->response_status_;
+            resp_headers = std::string(future->response_headers_json_.str());
+            resp_body = std::string(future->response_body_.str());
+          }
+        } else if (provider_name == "openai") {
+          auto future = openai_client_.AsyncInterceptAndForward(
+              local_query, session_id, path, headers_json, body, now_ns);
+          future.Wait();
+          if (stream_buffer_id == 0) {
+            resp_status = future->response_status_;
+            resp_headers = std::string(future->response_headers_json_.str());
+            resp_body = std::string(future->response_body_.str());
+          }
+        } else if (provider_name == "ollama") {
+          auto future = ollama_client_.AsyncInterceptAndForward(
+              local_query, session_id, path, headers_json, body, now_ns);
+          future.Wait();
+          if (stream_buffer_id == 0) {
+            resp_status = future->response_status_;
+            resp_headers = std::string(future->response_headers_json_.str());
+            resp_body = std::string(future->response_body_.str());
+          }
+        } else {
+          resp_status = 400;
+          resp_headers = "{}";
+          resp_body = R"({"error":"unknown provider: )" + provider_name + R"("})";
+        }
       });
 
   HLOG(kInfo, "DTProvenance proxy started successfully on port {}", port);
