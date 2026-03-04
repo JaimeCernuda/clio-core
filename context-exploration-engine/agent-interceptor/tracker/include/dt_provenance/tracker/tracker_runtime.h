@@ -4,13 +4,16 @@
 #include <atomic>
 #include <chimaera/chimaera.h>
 #include <string>
-#include <unordered_map>
-#include <mutex>
 
 #include "autogen/dt_tracker_methods.h"
 #include "conversation_threading.h"
 #include "tracker_client.h"
 #include "tracker_tasks.h"
+
+// Forward-declare untangler client to avoid circular header deps
+namespace dt_provenance::ctx_untangler {
+class Client;
+}
 
 namespace dt_provenance::tracker {
 
@@ -21,14 +24,14 @@ namespace dt_provenance::tracker {
  * - Tag = "Agentic_session_{session_id}"
  * - Blob = zero-padded monotonic counter (e.g., "0000000001")
  *
- * For Phase 4, uses an in-memory store. Phase 5 wires up CTE.
+ * Uses CTE for persistent storage across restarts.
  */
 class Runtime : public chi::Container {
  public:
   using CreateParams = dt_provenance::tracker::CreateParams;
 
   Runtime() = default;
-  ~Runtime() override = default;
+  ~Runtime() override;
 
   // Container interface
   void Init(const chi::PoolId& pool_id, const std::string& pool_name,
@@ -84,10 +87,9 @@ class Runtime : public chi::Container {
   std::atomic<uint64_t> sequence_counter_{0};
   ConversationThreader threader_;
 
-  // In-memory store (will be replaced by CTE in Phase 5)
-  // Tag name → ordered map of blob_name → interaction_json
-  std::mutex store_mutex_;
-  std::unordered_map<std::string, std::map<std::string, std::string>> store_;
+  // Ctx Untangler lazy-init (dispatches ComputeDiff after storing)
+  std::unique_ptr<dt_provenance::ctx_untangler::Client> untangler_client_;
+  bool untangler_initialized_ = false;
 };
 
 }  // namespace dt_provenance::tracker

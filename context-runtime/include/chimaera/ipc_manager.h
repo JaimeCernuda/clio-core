@@ -700,7 +700,9 @@ class IpcManager {
     // Send via lightbeam PUSH client
     {
       std::lock_guard<std::mutex> lock(zmq_client_send_mutex_);
-      zmq_transport_->Send(archive, hshm::lbm::LbmContext());
+      int send_rc = zmq_transport_->Send(archive, hshm::lbm::LbmContext());
+      HLOG(kDebug, "SendZmq: transport->Send returned {}, meta.send.size()={}, "
+           "send_bulks={}", send_rc, archive.send.size(), archive.send_bulks);
     }
 
     // Create Future wrapping the HSHM_MALLOC-allocated FutureShm
@@ -1306,6 +1308,13 @@ class IpcManager {
    * @param lane Pointer to the net worker's TaskLane
    */
   void SetNetLane(TaskLane *lane) { net_lane_ = lane; }
+
+  /**
+   * Get the net worker's TaskLane pointer
+   * Used by ClientRecv to route external client tasks to the net worker
+   * instead of the scheduler worker (whose lane may have stuck entries).
+   */
+  TaskLane *GetNetLane() const { return net_lane_; }
 
   /**
    * Enqueue a Future<SendTask> to the network queue

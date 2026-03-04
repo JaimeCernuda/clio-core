@@ -15,7 +15,8 @@ using json = nlohmann::ordered_json;
 static const std::vector<std::string> kHopByHopHeaders = {
     "connection",        "keep-alive",       "te",
     "trailers",          "transfer-encoding", "upgrade",
-    "host",              "content-length",    "accept-encoding"};
+    "host",              "content-length",    "accept-encoding",
+    "content-encoding"};
 
 static bool IsHopByHop(const std::string& name) {
   for (const auto& h : kHopByHopHeaders) {
@@ -96,12 +97,14 @@ void HttpProxyServer::Start(const std::string& host, uint16_t port,
     // 6. Set response
     res.status = resp_status;
 
-    // Parse and set response headers
+    // Parse and set response headers (strip hop-by-hop and encoding headers
+    // since httplib decodes the upstream response and set_content() will
+    // set Content-Length)
     if (!resp_headers_json.empty()) {
       try {
         auto resp_hdrs = json::parse(resp_headers_json);
         for (auto& [k, v] : resp_hdrs.items()) {
-          if (v.is_string()) {
+          if (v.is_string() && !IsHopByHop(k)) {
             res.set_header(k, v.get<std::string>());
           }
         }

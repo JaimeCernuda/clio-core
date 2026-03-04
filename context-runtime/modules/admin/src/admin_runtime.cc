@@ -99,7 +99,6 @@ chi::TaskResume Runtime::Create(hipc::FullPtr<CreateTask> task,
   client_.AsyncClientSend(chi::PoolQuery::Local(), 100);
 
   // Register ALL transport FDs with the net worker's EventManager
-  // This ensures epoll wakes the net worker when data arrives on any transport
   {
     auto *ipc_manager = CHI_IPC;
     chi::Worker *net_worker = ipc_manager->GetScheduler()->GetNetWorker();
@@ -108,20 +107,14 @@ chi::TaskResume Runtime::Create(hipc::FullPtr<CreateTask> task,
       auto *tcp_transport = ipc_manager->GetClientTransport(chi::IpcMode::kTcp);
       if (tcp_transport) {
         tcp_transport->RegisterEventManager(em);
-        HLOG(kDebug,
-             "Admin: TCP transport registered with net worker EventManager");
       }
       auto *ipc_transport = ipc_manager->GetClientTransport(chi::IpcMode::kIpc);
       if (ipc_transport) {
         ipc_transport->RegisterEventManager(em);
-        HLOG(kDebug,
-             "Admin: IPC transport registered with net worker EventManager");
       }
       auto *main_transport = ipc_manager->GetMainTransport();
       if (main_transport) {
         main_transport->RegisterEventManager(em);
-        HLOG(kDebug,
-             "Admin: Main transport registered with net worker EventManager");
       }
     }
   }
@@ -1023,6 +1016,8 @@ chi::TaskResume Runtime::Recv(hipc::FullPtr<RecvTask> task,
  */
 chi::TaskResume Runtime::ClientConnect(hipc::FullPtr<ClientConnectTask> task,
                                        chi::RunContext &rctx) {
+  HLOG(kInfo, "ClientConnect: Handling connection request (generation={})",
+       CHI_IPC->GetServerGeneration());
   task->response_ = 0;
   task->server_generation_ = CHI_IPC->GetServerGeneration();
   task->SetReturnCode(0);
@@ -1041,6 +1036,16 @@ chi::TaskResume Runtime::ClientRecv(hipc::FullPtr<ClientRecvTask> task,
   bool did_work = false;
   task->tasks_received_ = 0;
 
+  // Debug: log every ~1 second (10000 calls at 100us period)
+  static thread_local uint64_t client_recv_count = 0;
+  client_recv_count++;
+  if (client_recv_count % 10000 == 1) {
+    HLOG(kInfo, "ClientRecv: poll iteration {} (tcp={}, ipc={})",
+         client_recv_count,
+         ipc_manager->GetClientTransport(chi::IpcMode::kTcp) ? "yes" : "no",
+         ipc_manager->GetClientTransport(chi::IpcMode::kIpc) ? "yes" : "no");
+  }
+
   // Process both TCP and IPC servers
   for (int mode_idx = 0; mode_idx < 2; ++mode_idx) {
     chi::IpcMode mode =
@@ -1056,9 +1061,13 @@ chi::TaskResume Runtime::ClientRecv(hipc::FullPtr<ClientRecvTask> task,
       int rc = recv_info.rc;
       if (rc == EAGAIN) break;
       if (rc != 0) {
-        HLOG(kError, "ClientRecv: Recv failed: {}", rc);
+        HLOG(kError, "ClientRecv: Recv failed: {} (mode={})", rc,
+             mode_idx == 0 ? "tcp" : "ipc");
         break;
       }
+
+      HLOG(kInfo, "ClientRecv: Recv succeeded (rc=0, mode={})",
+           mode_idx == 0 ? "tcp" : "ipc");
 
       const auto &task_infos = archive.GetTaskInfos();
       if (task_infos.empty()) {
@@ -1069,6 +1078,8 @@ chi::TaskResume Runtime::ClientRecv(hipc::FullPtr<ClientRecvTask> task,
       const auto &info = task_infos[0];
       chi::PoolId pool_id = info.pool_id_;
       chi::u32 method_id = info.method_id_;
+      HLOG(kInfo, "ClientRecv: pool_id={}, method_id={}, net_key={}",
+           pool_id, method_id, info.task_id_.net_key_);
 
       // Get container for deserialization
       chi::Container *container = pool_manager->GetStaticContainer(pool_id);
@@ -1076,6 +1087,7 @@ chi::TaskResume Runtime::ClientRecv(hipc::FullPtr<ClientRecvTask> task,
         HLOG(kError, "ClientRecv: Container not found for pool_id {}", pool_id);
         continue;
       }
+      HLOG(kInfo, "ClientRecv: Container found, deserializing...");
 
       // Allocate and deserialize the task
       hipc::FullPtr<chi::Task> task_ptr =
@@ -1085,6 +1097,7 @@ chi::TaskResume Runtime::ClientRecv(hipc::FullPtr<ClientRecvTask> task,
         HLOG(kError, "ClientRecv: Failed to deserialize task");
         continue;
       }
+      HLOG(kInfo, "ClientRecv: Task deserialized successfully");
 
       // Create FutureShm for the task (server-side)
       hipc::FullPtr<chi::FutureShm> future_shm =
@@ -1108,6 +1121,8 @@ chi::TaskResume Runtime::ClientRecv(hipc::FullPtr<ClientRecvTask> task,
         future_shm->response_identity_len_ =
             static_cast<chi::u32>(recv_info.identity_.size());
       }
+      HLOG(kInfo, "ClientRecv: FutureShm created (origin={}, identity_len={})",
+           future_shm->origin_, future_shm->response_identity_len_);
       // No copy_space for ZMQ path — ShmTransferInfo defaults are fine
       // Mark as copied so the worker routes the completed task back via
       // lightbeam rather than treating it as a runtime-internal task
@@ -1116,20 +1131,33 @@ chi::TaskResume Runtime::ClientRecv(hipc::FullPtr<ClientRecvTask> task,
       // Create Future and enqueue to worker
       chi::Future<chi::Task> future(future_shm.shm_, task_ptr);
 
-      // Map task to lane using scheduler
-      chi::LaneId lane_id =
-          ipc_manager->GetScheduler()->ClientMapTask(ipc_manager, future);
-      auto *worker_queues = ipc_manager->GetTaskQueue();
-      auto &lane_ref = worker_queues->GetLane(lane_id, 0);
-      bool was_empty = lane_ref.Empty();
-      lane_ref.Push(future);
-      if (was_empty) {
-        ipc_manager->AwakenWorker(&lane_ref);
+      // Route external client tasks to the net worker's lane.
+      // The scheduler worker's lane (lane 0) has a stuck MPSC ring buffer
+      // entry from initialization that permanently blocks Pop().
+      // The net worker's lane is always actively drained (periodic tasks).
+      // We also mark the task as TASK_ROUTED to prevent RuntimeMapTask
+      // from re-routing it back to the scheduler worker's lane.
+      task_ptr->SetFlags(TASK_ROUTED);
+      task_ptr->SetCompleter(container->container_id_);
+
+      // Get the net worker's lane via the scheduler
+      chi::Worker *net_worker = ipc_manager->GetScheduler()->GetNetWorker();
+      chi::TaskLane *net_lane = net_worker ? net_worker->GetLane() : nullptr;
+      if (!net_lane) {
+        // Fallback: use lane from scheduler
+        net_lane = ipc_manager->GetNetLane();
       }
+      if (!net_lane) {
+        HLOG(kError, "ClientRecv: net_lane is NULL! Cannot enqueue task");
+        continue;
+      }
+      net_lane->Push(future);
+      ipc_manager->AwakenWorker(net_lane);
+      HLOG(kInfo, "ClientRecv: Task enqueued to net worker lane (awakened)");
 
       did_work = true;
       task->tasks_received_++;
-      HLOG(kDebug, "[ClientRecv] Received task pool_id={}, method={}, mode={}",
+      HLOG(kInfo, "[ClientRecv] Received task pool_id={}, method={}, mode={}",
            pool_id, method_id, mode_idx == 0 ? "tcp" : "ipc");
     }
   }
@@ -1173,6 +1201,7 @@ chi::TaskResume Runtime::ClientSend(hipc::FullPtr<ClientSendTask> task,
 
     chi::Future<chi::Task> queued_future;
     while (ipc_manager->TryPopNetTask(priority, queued_future)) {
+      HLOG(kInfo, "ClientSend: Got task from net_queue (mode={})", mode_idx == 0 ? "tcp" : "ipc");
       auto origin_task = queued_future.GetTaskPtr();
       if (origin_task.IsNull()) continue;
 
@@ -1226,7 +1255,12 @@ chi::TaskResume Runtime::ClientSend(hipc::FullPtr<ClientSendTask> task,
       }
 
       // Send via lightbeam
+      HLOG(kInfo, "ClientSend: Sending response via {} (identity_len={}, fd={})",
+           mode_idx == 0 ? "tcp" : "ipc",
+           archive.client_info_.identity_.size(),
+           archive.client_info_.fd_);
       int rc = response_transport->Send(archive, hshm::lbm::LbmContext());
+      HLOG(kInfo, "ClientSend: Send returned {}", rc);
       if (rc != 0) {
         HLOG(kError, "ClientSend: lightbeam Send failed: {}", rc);
       }
@@ -1250,10 +1284,12 @@ chi::TaskResume Runtime::ClientSend(hipc::FullPtr<ClientSendTask> task,
 
 chi::TaskResume Runtime::Monitor(hipc::FullPtr<MonitorTask> task,
                                  chi::RunContext &rctx) {
+  HLOG(kDebug, "Admin::Monitor query='{}' (len={})",
+       task->query_.substr(0, 80), task->query_.size());
   if (task->query_ == "worker_stats") {
     MonitorWorkerStats(task);
   } else if (task->query_.rfind("pool_stats://", 0) == 0) {
-    co_await MonitorPoolStats(task);
+    co_await MonitorPoolStats(task, rctx);
   } else if (task->query_.rfind("system_stats", 0) == 0) {
     MonitorSystemStats(task);
   } else if (task->query_ == "bdev_stats") {
@@ -1393,7 +1429,8 @@ void Runtime::MonitorContainerStats(hipc::FullPtr<MonitorTask> task) {
   task->results_[container_id_] = std::string(sbuf.data(), sbuf.size());
 }
 
-chi::TaskResume Runtime::MonitorPoolStats(hipc::FullPtr<MonitorTask> task) {
+chi::TaskResume Runtime::MonitorPoolStats(hipc::FullPtr<MonitorTask> task,
+                                          chi::RunContext &rctx) {
   // Parse pool_stats://PoolId:PoolQuery:selector
   // Format: pool_stats://<major.minor>:<routing_mode[:params...]>:<selector>
   std::string uri_body = task->query_.substr(13);  // skip "pool_stats://"
@@ -1491,22 +1528,17 @@ chi::TaskResume Runtime::MonitorPoolStats(hipc::FullPtr<MonitorTask> task) {
     co_return;
   }
 
-  // 5. Create sub-MonitorTask targeting the pool and dispatch it
-  auto *ipc_manager = CHI_IPC;
-  auto sub_task = ipc_manager->NewTask<MonitorTask>(
-      chi::CreateTaskId(), target_pool_id, target_pool_query, selector);
-  chi::Future<MonitorTask> sub_future = ipc_manager->Send(sub_task);
-  co_await sub_future;
-
-  // 6. Copy results from sub-task into this task
-  if (sub_future->GetReturnCode() != 0) {
-    task->SetReturnCode(sub_future->GetReturnCode());
-    HLOG(kError, "Monitor(pool_stats): sub-task failed with rc={}",
-         sub_future->GetReturnCode());
-  } else {
-    task->results_ = sub_future->results_;
-    task->SetReturnCode(0);
-  }
+  // 5. Execute the target pool's Monitor handler inline (on this worker thread)
+  //    instead of dispatching through Send() -> lane system.
+  //    This avoids MPSC ring buffer scheduling issues with lane 0.
+  HLOG(kDebug, "MonitorPoolStats: inline Run for pool={} selector='{}'",
+       target_pool_id, selector.substr(0, 60));
+  std::string saved_query = task->query_;
+  task->query_ = selector;
+  co_await container->Run(Method::kMonitor,
+                          task.template Cast<chi::Task>(), rctx);
+  task->query_ = saved_query;
+  // Results are already in task->results_ from the target handler
   co_return;
 }
 

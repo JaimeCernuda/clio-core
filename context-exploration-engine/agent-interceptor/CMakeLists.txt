@@ -2,6 +2,11 @@ cmake_minimum_required(VERSION 3.20)
 project(dt_provenance VERSION 0.1.0)
 
 #------------------------------------------------------------------------------
+# System Dependencies
+#------------------------------------------------------------------------------
+find_package(OpenSSL REQUIRED)
+
+#------------------------------------------------------------------------------
 # External Dependencies (FetchContent)
 #------------------------------------------------------------------------------
 include(FetchContent)
@@ -42,16 +47,19 @@ FetchContent_MakeAvailable(Catch2)
 # Protocol library — standalone types, parsers, no Chimaera dependency
 add_subdirectory(protocol)
 
-# HTTP Proxy ChiMod (pool 800)
-add_subdirectory(proxy)
+# Context Untangler ChiMod (pool 820) — must come before tracker
+add_subdirectory(ctx_untangler)
 
-# Interception ChiMods (pools 801-803)
+# Conversation Tracker ChiMod (pool 810)
+add_subdirectory(tracker)
+
+# Interception ChiMods (pools 801-803) — depend on tracker client
 add_subdirectory(interception/anthropic)
 add_subdirectory(interception/openai)
 add_subdirectory(interception/ollama)
 
-# Conversation Tracker ChiMod (pool 810)
-add_subdirectory(tracker)
+# HTTP Proxy ChiMod (pool 800) — depends on interception + tracker clients
+add_subdirectory(proxy)
 
 # Demo launcher and tools
 add_subdirectory(demo)

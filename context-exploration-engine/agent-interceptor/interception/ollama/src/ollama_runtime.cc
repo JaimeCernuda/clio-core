@@ -9,8 +9,11 @@
 #include "dt_provenance/protocol/interaction.h"
 #include "dt_provenance/protocol/ollama_parser.h"
 #include "dt_provenance/protocol/stream_reassembly.h"
+#include "dt_provenance/tracker/tracker_client.h"
 
 namespace dt_provenance::interception::ollama {
+
+Runtime::~Runtime() = default;
 
 using json = nlohmann::ordered_json;
 using namespace dt_provenance::protocol;
@@ -49,7 +52,7 @@ static void ParseUrl(const std::string& url, std::string& host, int& port,
 
 chi::TaskResume Runtime::Create(hipc::FullPtr<CreateTask> task,
                                 chi::RunContext& rctx) {
-  auto& params = task->GetNewContainerParams<CreateParams>();
+  auto params = task->GetParams();
   std::string url(params.upstream_base_url_.str());
 
   ParseUrl(url, upstream_host_, upstream_port_, upstream_ssl_);
@@ -180,12 +183,26 @@ chi::TaskResume Runtime::InterceptAndForward(
 
     record.response.status_code = response_status;
 
-    // 4. Dispatch to Tracker (Phase 4 wires this up)
+    // 4. Dispatch to Tracker
     HLOG(kInfo,
          "Ollama interaction captured: session={} model={} "
-         "in_tokens={} out_tokens={} latency={:.1f}ms",
+         "in_tokens={} out_tokens={} latency={}ms",
          session_id, record.model, record.metrics.input_tokens,
-         record.metrics.output_tokens, latency_ms);
+         record.metrics.output_tokens, static_cast<int>(latency_ms));
+
+    if (!tracker_initialized_) {
+      chi::PoolId pool = CHI_POOL_MANAGER->FindPoolByName("dt_tracker_pool");
+      if (!pool.IsNull()) {
+        tracker_client_ = std::make_unique<dt_provenance::tracker::Client>(pool);
+        tracker_initialized_ = true;
+      }
+    }
+    if (tracker_initialized_) {
+      std::string record_json = record.ToJson().dump();
+      auto f = tracker_client_->AsyncStoreInteraction(
+          chi::PoolQuery::Local(), record_json);
+      f.Wait();
+    }
   }
 
   active_requests_.fetch_sub(1);
@@ -212,3 +229,5 @@ chi::u64 Runtime::GetWorkRemaining() const {
 }
 
 }  // namespace dt_provenance::interception::ollama
+
+CHI_TASK_CC(dt_provenance::interception::ollama::Runtime)

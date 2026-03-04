@@ -29,7 +29,7 @@ int main(int argc, char* argv[]) {
   // Initialize Chimaera in server mode
   // This reads the YAML config, starts the runtime, and creates all
   // ChiMods specified in the compose section.
-  CHIMAERA_INIT(kServer, true);
+  chi::CHIMAERA_INIT(chi::ChimaeraMode::kServer, true);
 
   std::cout << "DTProvenance server started. Press Ctrl+C to stop."
             << std::endl;

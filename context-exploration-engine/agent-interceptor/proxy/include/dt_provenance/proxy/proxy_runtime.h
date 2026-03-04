@@ -3,26 +3,31 @@
 
 #include <chimaera/chimaera.h>
 
-#include "http_proxy_server.h"
+#include <atomic>
+#include <chrono>
+#include <memory>
+
 #include "proxy_client.h"
 #include "proxy_tasks.h"
 #include "autogen/dt_proxy_methods.h"
+
+namespace dt_provenance::tracker { class Client; }
 
 namespace dt_provenance::proxy {
 
 /**
  * Runtime container for the HTTP Proxy ChiMod
  *
- * Create() starts an httplib server on port 9090.
- * HTTP threads extract sessions, detect providers, and dispatch
- * InterceptAndForward tasks to the appropriate interception ChiMod.
+ * All LLM forwarding now happens on Chimaera worker threads via the
+ * Monitor handler.  A Python Flask bridge translates agent HTTP requests
+ * into pool_stats://800.0:local:<json> queries that land here.
  */
 class Runtime : public chi::Container {
  public:
   using CreateParams = dt_provenance::proxy::CreateParams;
 
   Runtime() = default;
-  ~Runtime() override = default;
+  ~Runtime() override;
 
   // Container interface
   void Init(const chi::PoolId& pool_id, const std::string& pool_name,
@@ -60,8 +65,23 @@ class Runtime : public chi::Container {
   void DelTask(chi::u32 method, hipc::FullPtr<chi::Task> task_ptr) override;
 
  private:
+  // Monitor handler helpers
+  // Returns record JSON for tracker storage (empty if no recording needed)
+  std::string HandleForwardRequest(hipc::FullPtr<MonitorTask>& task,
+                                   const std::string& query_json);
+  void HandleDispatchStats(hipc::FullPtr<MonitorTask>& task);
+
+  bool EnsureTrackerClient();
+
   Client client_;
-  HttpProxyServer http_server_;
+
+  // Tracker client (lazy-initialized on first use)
+  bool tracker_initialized_ = false;
+  std::unique_ptr<tracker::Client> tracker_client_;
+
+  // Dispatch stats
+  std::atomic<uint64_t> total_requests_{0};
+  std::chrono::steady_clock::time_point start_time_;
 };
 
 }  // namespace dt_provenance::proxy

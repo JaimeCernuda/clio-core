@@ -59,7 +59,7 @@ struct InterceptAndForwardTask : public chi::Task {
   IN chi::u64 request_time_ns_;
 
   // OUT fields
-  OUT chi::i32 response_status_;
+  OUT int32_t response_status_;
   OUT chi::priv::string response_headers_json_;
   OUT chi::priv::string response_body_;
   OUT double latency_ms_;

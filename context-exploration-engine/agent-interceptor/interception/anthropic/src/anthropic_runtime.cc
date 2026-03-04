@@ -10,8 +10,11 @@
 #include "dt_provenance/protocol/cost_estimator.h"
 #include "dt_provenance/protocol/interaction.h"
 #include "dt_provenance/protocol/stream_reassembly.h"
+#include "dt_provenance/tracker/tracker_client.h"
 
 namespace dt_provenance::interception::anthropic {
+
+Runtime::~Runtime() = default;
 
 using json = nlohmann::ordered_json;
 using namespace dt_provenance::protocol;
@@ -50,7 +53,7 @@ static void ParseUrl(const std::string& url, std::string& host, int& port,
 
 chi::TaskResume Runtime::Create(hipc::FullPtr<CreateTask> task,
                                 chi::RunContext& rctx) {
-  auto& params = task->GetNewContainerParams<CreateParams>();
+  auto params = task->GetParams();
   std::string url(params.upstream_base_url_.str());
 
   ParseUrl(url, upstream_host_, upstream_port_, upstream_ssl_);
@@ -62,6 +65,7 @@ chi::TaskResume Runtime::Create(hipc::FullPtr<CreateTask> task,
 
 chi::TaskResume Runtime::InterceptAndForward(
     hipc::FullPtr<InterceptAndForwardTask> task, chi::RunContext& rctx) {
+  HLOG(kInfo, "Anthropic InterceptAndForward: COROUTINE STARTED");
   active_requests_.fetch_add(1);
   auto start = std::chrono::steady_clock::now();
 
@@ -91,12 +95,15 @@ chi::TaskResume Runtime::InterceptAndForward(
   int response_status = 502;
   httplib::Headers response_headers;
 
+  HLOG(kInfo, "Anthropic: creating SSL client to {}:{}", upstream_host_,
+       upstream_port_);
   if (upstream_ssl_) {
     httplib::SSLClient cli(upstream_host_, upstream_port_);
     cli.set_connection_timeout(30);
     cli.set_read_timeout(300);  // LLM responses can be slow
     cli.enable_server_certificate_verification(false);  // TODO: proper cert handling
 
+    HLOG(kInfo, "Anthropic: sending POST to {}", path);
     auto res = cli.Post(path, hdr, request_body, "application/json");
     if (res) {
       response_status = res->status;
@@ -116,6 +123,7 @@ chi::TaskResume Runtime::InterceptAndForward(
     }
   }
 
+  HLOG(kInfo, "Anthropic: HTTP request completed, status={}", response_status);
   auto end = std::chrono::steady_clock::now();
   double latency_ms = std::chrono::duration<double, std::milli>(end - start).count();
 
@@ -183,13 +191,26 @@ chi::TaskResume Runtime::InterceptAndForward(
 
     record.response.status_code = response_status;
 
-    // 4. Dispatch to Tracker (Phase 4 will wire this up)
-    // For now, just log
+    // 4. Dispatch to Tracker
     HLOG(kInfo,
          "Anthropic interaction captured: session={} model={} "
-         "in_tokens={} out_tokens={} cost=${:.6f} latency={:.1f}ms",
+         "in_tokens={} out_tokens={} latency={}ms",
          session_id, record.model, record.metrics.input_tokens,
-         record.metrics.output_tokens, record.metrics.cost_usd, latency_ms);
+         record.metrics.output_tokens, static_cast<int>(latency_ms));
+
+    if (!tracker_initialized_) {
+      chi::PoolId pool = CHI_POOL_MANAGER->FindPoolByName("dt_tracker_pool");
+      if (!pool.IsNull()) {
+        tracker_client_ = std::make_unique<dt_provenance::tracker::Client>(pool);
+        tracker_initialized_ = true;
+      }
+    }
+    if (tracker_initialized_) {
+      std::string record_json = record.ToJson().dump();
+      auto f = tracker_client_->AsyncStoreInteraction(
+          chi::PoolQuery::Local(), record_json);
+      f.Wait();
+    }
   }
 
   active_requests_.fetch_sub(1);
@@ -216,3 +237,5 @@ chi::u64 Runtime::GetWorkRemaining() const {
 }
 
 }  // namespace dt_provenance::interception::anthropic
+
+CHI_TASK_CC(dt_provenance::interception::anthropic::Runtime)

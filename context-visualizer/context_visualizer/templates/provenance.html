@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block title %}Provenance - Context Graph{% endblock %}
+{% block head %}
+<script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+<style>
+    .provenance-container { display: flex; gap: 20px; padding: 20px; height: calc(100vh - 80px); }
+    .session-panel { width: 250px; flex-shrink: 0; overflow-y: auto; }
+    .main-panel { flex: 1; display: flex; flex-direction: column; gap: 15px; }
+    .session-list { list-style: none; padding: 0; margin: 0; }
+    .session-item { padding: 10px 12px; border: 1px solid #333; border-radius: 6px; margin-bottom: 6px; cursor: pointer; background: #1a1a2e; transition: background 0.2s; }
+    .session-item:hover { background: #16213e; }
+    .session-item.active { background: #0f3460; border-color: #e94560; }
+    .session-item .session-id { font-weight: bold; font-size: 0.9em; color: #eee; word-break: break-all; }
+    .session-item .session-count { font-size: 0.8em; color: #888; margin-top: 4px; }
+    .chart-container { flex: 1; min-height: 300px; background: #1a1a2e; border-radius: 8px; padding: 10px; }
+    .event-timeline { max-height: 250px; overflow-y: auto; background: #1a1a2e; border-radius: 8px; padding: 12px; }
+    .event-item { display: flex; gap: 10px; padding: 6px 0; border-bottom: 1px solid #2a2a3e; font-size: 0.85em; }
+    .event-item:last-child { border-bottom: none; }
+    .event-badge { padding: 2px 8px; border-radius: 4px; font-size: 0.8em; font-weight: bold; min-width: 100px; text-align: center; }
+    .badge-start { background: #1b5e20; color: #a5d6a7; }
+    .badge-continuation { background: #1565c0; color: #90caf9; }
+    .badge-tool { background: #e65100; color: #ffcc80; }
+    .badge-compression { background: #880e4f; color: #f48fb1; }
+    .event-details { color: #ccc; }
+    .event-seq { color: #666; min-width: 40px; }
+    .no-data { color: #666; text-align: center; padding: 40px; font-style: italic; }
+    h3 { margin: 0 0 10px 0; color: #eee; font-size: 1em; }
+    .live-indicator { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #4caf50; margin-right: 6px; animation: pulse 2s infinite; }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="provenance-container">
+    <div class="session-panel">
+        <h3>Agent Sessions</h3>
+        <ul class="session-list" id="session-list">
+            <li class="no-data">Loading...</li>
+        </ul>
+    </div>
+    <div class="main-panel">
+        <div class="chart-container" id="token-chart">
+            <div class="no-data">Select a session to view context graph</div>
+        </div>
+        <div class="event-timeline">
+            <h3><span class="live-indicator" id="live-dot" style="display:none;"></span>Event Timeline</h3>
+            <div id="event-list">
+                <div class="no-data">No events</div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/provenance.js') }}"></script>
+{% endblock %}

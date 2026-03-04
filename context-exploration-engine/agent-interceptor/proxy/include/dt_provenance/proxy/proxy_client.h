@@ -23,8 +23,8 @@ class Client : public chi::ContainerClient {
   chi::Future<CreateTask> AsyncCreate(const chi::PoolQuery& pool_query,
                                       const std::string& pool_name,
                                       const chi::PoolId& custom_pool_id,
-                                      chi::u16 port = 9090,
-                                      chi::u16 num_threads = 8) {
+                                      uint16_t port = 9090,
+                                      uint16_t num_threads = 8) {
     auto* ipc_manager = CHI_IPC;
     auto task = ipc_manager->NewTask<CreateTask>(
         chi::CreateTaskId(), chi::kAdminPoolId, pool_query,

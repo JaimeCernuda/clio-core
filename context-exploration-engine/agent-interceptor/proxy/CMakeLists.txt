@@ -4,11 +4,11 @@ cmake_minimum_required(VERSION 3.20)
 # dt_proxy — HTTP Proxy ChiMod (pool 800)
 #------------------------------------------------------------------------------
 
-# The proxy has two parts:
-# 1. A standalone HTTP server library (no Chimaera dependency needed for tests)
-# 2. The ChiMod runtime (needs Chimaera)
+# The proxy forwards LLM requests via Monitor handler on Chimaera worker threads.
+# A Python Flask bridge (context-visualizer) translates agent HTTP requests
+# into pool_stats://800.0:local:<json> queries that land in the Monitor handler.
 
-# Standalone HTTP server + session guard (testable without Chimaera)
+# Standalone HTTP server + session guard (kept for reference / standalone tests)
 add_library(dt_proxy_http SHARED
   src/http_proxy_server.cc
   src/session_guard.cc
@@ -23,7 +23,7 @@ target_include_directories(dt_proxy_http
 
 target_link_libraries(dt_proxy_http
   PUBLIC
-    dt_provenance::protocol
+    $<BUILD_INTERFACE:dt_protocol>
     $<BUILD_INTERFACE:httplib::httplib>
     $<BUILD_INTERFACE:nlohmann_json::nlohmann_json>
 )
@@ -36,19 +36,27 @@ set_target_properties(dt_proxy_http PROPERTIES
 # ChiMod client library
 add_chimod_client(
   SOURCES
-    # Client is header-only for now
+    src/proxy_client.cc
   LINK_LIBRARIES
     chimaera_admin_client
 )
 
 # ChiMod runtime library
+# Monitor handler does all LLM forwarding on Chimaera worker threads.
+# httplib is still needed for the ForwardDirect() SSL client.
 add_chimod_runtime(
   SOURCES
     src/proxy_runtime.cc
     src/autogen/dt_proxy_lib_exec.cc
   LINK_LIBRARIES
     chimaera_admin_runtime
-    dt_proxy_http
+    $<BUILD_INTERFACE:dt_protocol>
+    $<BUILD_INTERFACE:httplib::httplib>
+    $<BUILD_INTERFACE:nlohmann_json::nlohmann_json>
+    $<BUILD_INTERFACE:dt_provenance_dt_tracker_client>
+    $<BUILD_INTERFACE:wrp_cte_core_client>
+    OpenSSL::SSL
+    OpenSSL::Crypto
 )
 
 # Tests

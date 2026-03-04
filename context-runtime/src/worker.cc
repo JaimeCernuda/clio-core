@@ -347,6 +347,15 @@ bool Worker::ProcessNewTask(TaskLane *lane) {
   Future<Task> future;
   // Pop Future<Task> from lane
   if (!lane->Pop(future)) {
+    // Log when Pop fails on a non-empty lane (indicates entry not ready)
+    if (!lane->Empty()) {
+      static thread_local uint64_t pop_fail_count = 0;
+      if (pop_fail_count++ % 10000 == 0) {
+        HLOG(kInfo, "Worker {}: Pop FAILED on non-empty lane (size={}), "
+             "entry not ready? pop_fail_count={}",
+             worker_id_, lane->Size(), pop_fail_count);
+      }
+    }
     return false;
   }
 
@@ -363,6 +372,9 @@ bool Worker::ProcessNewTask(TaskLane *lane) {
   // Get pool_id and method_id from FutureShm
   PoolId pool_id = future_shm->pool_id_;
   u32 method_id = future_shm->method_id_;
+
+  HLOG(kDebug, "Worker {}: ProcessNewTask pool_id={} method={}",
+       worker_id_, pool_id, method_id);
 
   // Get static container for task deserialization (stateless operation)
   auto *pool_manager = CHI_POOL_MANAGER;
@@ -852,6 +864,7 @@ void Worker::EndTask(const FullPtr<Task> &task_ptr, RunContext *run_ctx,
                                 NetQueuePriority::kClientSendIpc);
         break;
       default:
+        HLOG(kWarning, "EndTask: Unknown origin {}, falling back to SHM", origin);
         EndTaskShmTransfer(task_ptr, run_ctx, container);
         break;
     }

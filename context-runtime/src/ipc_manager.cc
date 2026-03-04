@@ -98,7 +98,7 @@ bool IpcManager::ClientInit() {
       ipc_mode_ = IpcMode::kTcp;  // Default
     }
   }
-  HLOG(kInfo, "IpcManager::ClientInit: IPC mode = {}",
+  HLOG(kDebug, "IpcManager::ClientInit: IPC mode = {}",
        ipc_mode_ == IpcMode::kShm   ? "SHM"
        : ipc_mode_ == IpcMode::kIpc ? "IPC"
                                     : "TCP");
@@ -109,7 +109,7 @@ bool IpcManager::ClientInit() {
   if (retry_env) {
     client_retry_timeout_ = static_cast<float>(std::atof(retry_env));
   }
-  HLOG(kInfo, "IpcManager::ClientInit: retry_timeout = {}s",
+  HLOG(kDebug, "IpcManager::ClientInit: retry_timeout = {}s",
        client_retry_timeout_);
 
   // Parse CHI_CLIENT_TRY_NEW_SERVERS environment variable
@@ -117,13 +117,13 @@ bool IpcManager::ClientInit() {
   if (try_new_env) {
     client_try_new_servers_ = std::atoi(try_new_env);
   }
-  HLOG(kInfo, "IpcManager::ClientInit: try_new_servers = {}",
+  HLOG(kDebug, "IpcManager::ClientInit: try_new_servers = {}",
        client_try_new_servers_);
 
   // Load hostfile so Phase 2 failover has hosts to try
   if (client_try_new_servers_ > 0) {
     if (LoadHostfile()) {
-      HLOG(kInfo, "IpcManager::ClientInit: Loaded {} hosts from hostfile",
+      HLOG(kDebug, "IpcManager::ClientInit: Loaded {} hosts from hostfile",
            hostfile_map_.size());
     } else {
       HLOG(kWarning, "IpcManager::ClientInit: Failed to load hostfile, "
@@ -144,7 +144,7 @@ bool IpcManager::ClientInit() {
         zmq_transport_ = hshm::lbm::TransportFactory::Get(
             ipc_path, hshm::lbm::TransportType::kSocket,
             hshm::lbm::TransportMode::kClient, "ipc", 0);
-        HLOG(kInfo, "IpcManager: IPC transport connected to {}", ipc_path);
+        HLOG(kDebug, "IpcManager: IPC transport connected to {}", ipc_path);
       } catch (const std::exception &e) {
         HLOG(kError,
              "IpcManager::ClientInit: Failed to create IPC transport: {}",
@@ -157,7 +157,7 @@ bool IpcManager::ClientInit() {
         zmq_transport_ = hshm::lbm::TransportFactory::Get(
             config->GetServerAddr(), hshm::lbm::TransportType::kZeroMq,
             hshm::lbm::TransportMode::kClient, "tcp", port + 3);
-        HLOG(kInfo, "IpcManager: DEALER transport connected to port {}",
+        HLOG(kDebug, "IpcManager: DEALER transport connected to port {}",
              port + 3);
       } catch (const std::exception &e) {
         HLOG(kError,
@@ -733,7 +733,7 @@ bool IpcManager::WaitForLocalServer() {
     wait_server_timeout_ = static_cast<float>(std::atof(wait_env));
   }
 
-  HLOG(kInfo, "Waiting for runtime via lightbeam (timeout={}s)",
+  HLOG(kDebug, "Waiting for runtime via lightbeam (timeout={}s)",
        wait_server_timeout_);
 
   // 0 = don't wait at all
@@ -762,7 +762,7 @@ bool IpcManager::WaitForLocalServer() {
 
   if (task->response_ == 0) {
     client_generation_ = task->server_generation_;
-    HLOG(kInfo, "Successfully connected to runtime (generation={})",
+    HLOG(kDebug, "Successfully connected to runtime (generation={})",
          client_generation_);
     // Task cleanup is handled by ~Future() since Wait() marked it consumed.
     return true;
@@ -2560,11 +2560,8 @@ Future<Task> IpcManager::SendRuntimeClient(
     u32 lane_id = scheduler_->ClientMapTask(this, future);
     if (!worker_queues_.IsNull()) {
       auto &dest_lane = worker_queues_->GetLane(lane_id, 0);
-      bool was_empty = dest_lane.Empty();
       dest_lane.Push(future);
-      if (was_empty) {
-        AwakenWorker(&dest_lane);
-      }
+      AwakenWorker(&dest_lane);
     }
   }
 

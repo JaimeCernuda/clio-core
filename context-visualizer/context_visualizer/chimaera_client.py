@@ -352,6 +352,76 @@ def restart_node(ip_address, port=9413):
     }
 
 
+def forward_llm_request(session_id, provider, path, headers, body, timeout=300):
+    """Forward an LLM request via the proxy ChiMod's Monitor handler."""
+    import json as _json
+    query = _json.dumps({
+        "action": "forward",
+        "session_id": session_id,
+        "provider": provider,
+        "path": path,
+        "headers": headers,
+        "body": body,
+    })
+    return _monitor("local", f"pool_stats://800.0:local:{query}", timeout=timeout)
+
+
+def get_dispatch_stats():
+    """Query dispatch stats from the proxy ChiMod (pool 800.0)."""
+    return _monitor("local", "pool_stats://800.0:local:dispatch_stats")
+
+
+def get_proxy_sessions():
+    """Query session list from the proxy ChiMod (delegates to tracker)."""
+    return _monitor("local", "pool_stats://800.0:local:list_sessions")
+
+
+def get_proxy_session(session_id):
+    """Query session interactions via proxy ChiMod."""
+    return _monitor("local", f"pool_stats://800.0:local:query_session://{session_id}")
+
+
+def get_proxy_graph(session_id, since=0):
+    """Query context graph via proxy ChiMod."""
+    q = f"query_graph://{session_id}"
+    if since:
+        q += f"?since={since}"
+    return _monitor("local", f"pool_stats://800.0:local:{q}")
+
+
+def get_sessions():
+    """Query list_sessions via the proxy ChiMod (pool 800.0)."""
+    return _monitor("local", "pool_stats://800.0:local:list_sessions")
+
+
+def get_session_interactions(session_id):
+    """Query all interactions for a session via the proxy ChiMod (pool 800.0)."""
+    return _monitor("local", f"pool_stats://800.0:local:query_session://{session_id}")
+
+
+def get_interaction(session_id, seq_id):
+    """Query a single interaction via the proxy ChiMod (pool 800.0)."""
+    return _monitor("local", f"pool_stats://800.0:local:get_interaction://{session_id}/{seq_id}")
+
+
+def get_context_graphs():
+    """Query all context graph session IDs via the proxy ChiMod (pool 800.0)."""
+    return _monitor("local", "pool_stats://800.0:local:list_graphs")
+
+
+def get_context_graph(session_id, since=0):
+    """Query context graph diff nodes for a session via the proxy ChiMod (pool 800.0)."""
+    q = f"query_graph://{session_id}"
+    if since:
+        q += f"?since={since}"
+    return _monitor("local", f"pool_stats://800.0:local:{q}")
+
+
+def get_context_node(session_id, seq_id):
+    """Query a single context graph diff node via the proxy ChiMod (pool 800.0)."""
+    return _monitor("local", f"pool_stats://800.0:local:get_node://{session_id}/{seq_id}")
+
+
 def finalize():
     """Clean shutdown of the Chimaera client."""
     global _init_done

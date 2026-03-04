@@ -252,7 +252,8 @@ public:
   void MonitorContainerStats(hipc::FullPtr<MonitorTask> task);
 
   /** Monitor sub-handler: delegate query to a specific pool. */
-  chi::TaskResume MonitorPoolStats(hipc::FullPtr<MonitorTask> task);
+  chi::TaskResume MonitorPoolStats(hipc::FullPtr<MonitorTask> task,
+                                     chi::RunContext &rctx);
 
   /** Monitor sub-handler: return system_stats ring buffer entries. */
   void MonitorSystemStats(hipc::FullPtr<MonitorTask> task);

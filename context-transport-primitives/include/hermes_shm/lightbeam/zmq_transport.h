@@ -112,7 +112,7 @@ class ZeroMqTransport : public Transport {
     if (!owner.ctx) {
       owner.ctx = zmq_ctx_new();
       zmq_ctx_set(owner.ctx, ZMQ_IO_THREADS, 2);
-      HLOG(kInfo, "[ZeroMqTransport] Created shared context with 2 I/O threads");
+      HLOG(kDebug, "[ZeroMqTransport] Created shared context with 2 I/O threads");
     }
     return owner.ctx;
   }
@@ -154,7 +154,7 @@ class ZeroMqTransport : public Transport {
 
       HLOG(kDebug, "ZeroMqTransport(DEALER) connecting to URL: {}", full_url);
 
-      int immediate = 0;
+      int immediate = 1;  // Only send to connected+handshaken peers
       zmq_setsockopt(socket_, ZMQ_IMMEDIATE, &immediate, sizeof(immediate));
 
       int timeout = 5000;
@@ -198,10 +198,12 @@ class ZeroMqTransport : public Transport {
       HLOG(kDebug, "ZeroMqTransport(DEALER) connected to {} (pid={})", full_url, pid);
       zmq_fired_action_.socket_ = socket_;
     } else {
-      // ROUTER socket for server
-      ctx_ = zmq_ctx_new();
-      owns_ctx_ = true;
-      zmq_ctx_set(ctx_, ZMQ_IO_THREADS, 2);
+      // ROUTER socket for server — use shared context
+      // Using the shared context avoids having separate ZMQ I/O threads
+      // per ROUTER, which can cause ZMTP handshake issues when the process
+      // has heavy threading (I/O threads sleeping in ep_poll).
+      ctx_ = GetSharedContext();
+      owns_ctx_ = false;
       socket_ = zmq_socket(ctx_, ZMQ_ROUTER);
 
       // Set mandatory routing - reject messages to unknown identities
@@ -228,11 +230,69 @@ class ZeroMqTransport : public Transport {
         std::string err = "ZeroMqTransport(ROUTER) failed to bind to URL '" +
                           full_url + "': " + zmq_strerror(zmq_errno());
         zmq_close(socket_);
-        zmq_ctx_destroy(ctx_);
+        // Don't destroy shared context on bind failure
         throw std::runtime_error(err);
       }
       HLOG(kDebug, "ZeroMqTransport(ROUTER) bound successfully to {}", full_url);
       zmq_fired_action_.socket_ = socket_;
+
+      // Socket monitor: attach to an inproc endpoint to see connection events
+      std::string monitor_ep = "inproc://router-monitor-" + std::to_string(port_);
+      int mon_rc = zmq_socket_monitor(socket_, monitor_ep.c_str(),
+          ZMQ_EVENT_LISTENING | ZMQ_EVENT_ACCEPTED |
+          ZMQ_EVENT_HANDSHAKE_SUCCEEDED | ZMQ_EVENT_HANDSHAKE_FAILED_PROTOCOL |
+          ZMQ_EVENT_HANDSHAKE_FAILED_AUTH | ZMQ_EVENT_HANDSHAKE_FAILED_NO_DETAIL |
+          ZMQ_EVENT_DISCONNECTED | ZMQ_EVENT_CONNECT_RETRIED);
+      if (mon_rc == 0) {
+        // Spawn a detached thread to read monitor events
+        std::thread([ctx = ctx_, monitor_ep, port = port_]() {
+          void *mon = zmq_socket(ctx, ZMQ_PAIR);
+          if (!mon) return;
+          if (zmq_connect(mon, monitor_ep.c_str()) != 0) {
+            zmq_close(mon);
+            return;
+          }
+          HLOG(kInfo, "ROUTER monitor active for port {}", port);
+          while (true) {
+            zmq_msg_t evmsg;
+            zmq_msg_init(&evmsg);
+            int rc = zmq_msg_recv(&evmsg, mon, 0);
+            if (rc < 0) { zmq_msg_close(&evmsg); break; }
+            uint16_t event_id = 0;
+            uint32_t event_val = 0;
+            if (zmq_msg_size(&evmsg) >= 6) {
+              memcpy(&event_id, zmq_msg_data(&evmsg), 2);
+              memcpy(&event_val, (char*)zmq_msg_data(&evmsg) + 2, 4);
+            }
+            zmq_msg_close(&evmsg);
+            // Receive address frame
+            zmq_msg_t addrmsg;
+            zmq_msg_init(&addrmsg);
+            zmq_msg_recv(&addrmsg, mon, 0);
+            std::string addr((char*)zmq_msg_data(&addrmsg), zmq_msg_size(&addrmsg));
+            zmq_msg_close(&addrmsg);
+            const char *name = "UNKNOWN";
+            switch (event_id) {
+              case ZMQ_EVENT_LISTENING: name = "LISTENING"; break;
+              case ZMQ_EVENT_ACCEPTED: name = "ACCEPTED"; break;
+              case ZMQ_EVENT_HANDSHAKE_SUCCEEDED: name = "HANDSHAKE_OK"; break;
+              case ZMQ_EVENT_HANDSHAKE_FAILED_PROTOCOL: name = "HANDSHAKE_FAIL_PROTO"; break;
+              case ZMQ_EVENT_HANDSHAKE_FAILED_AUTH: name = "HANDSHAKE_FAIL_AUTH"; break;
+              case ZMQ_EVENT_HANDSHAKE_FAILED_NO_DETAIL: name = "HANDSHAKE_FAIL"; break;
+              case ZMQ_EVENT_DISCONNECTED: name = "DISCONNECTED"; break;
+              case ZMQ_EVENT_CONNECT_RETRIED: name = "CONNECT_RETRIED"; break;
+            }
+            HLOG(kInfo, "ROUTER MONITOR port={}: event={} ({}) val={} addr={}",
+                 port, name, event_id, event_val, addr);
+          }
+          zmq_close(mon);
+        }).detach();
+      } else {
+        HLOG(kWarning, "Failed to attach ROUTER monitor for port {}: {}",
+             port_, zmq_strerror(zmq_errno()));
+      }
+
+      // (Self-test removed — confirmed ROUTER works in-process)
     }
   }
 
@@ -297,6 +357,7 @@ class ZeroMqTransport : public Transport {
     } else if (IsClient()) {
       // DEALER mode: send empty delimiter frame
       int rc = zmq_send(socket_, "", 0, ZMQ_SNDMORE);
+      HLOG(kDebug, "ZeroMqTransport::Send(DEALER) - delimiter frame rc={}", rc);
       if (rc == -1) {
         HLOG(kError, "ZeroMqTransport::Send(DEALER) - delimiter frame FAILED: {}",
              zmq_strerror(zmq_errno()));
@@ -311,6 +372,8 @@ class ZeroMqTransport : public Transport {
     }
 
     int rc = zmq_send(socket_, meta_str.data(), meta_str.size(), flags);
+    HLOG(kDebug, "ZeroMqTransport::Send - meta rc={}, size={}, flags={}",
+         rc, meta_str.size(), flags);
     if (rc == -1) {
       HLOG(kError, "ZeroMqTransport::Send - meta FAILED: {}",
            zmq_strerror(zmq_errno()));
@@ -369,6 +432,22 @@ class ZeroMqTransport : public Transport {
 
     // ROUTER mode: receive identity frame first
     if (IsServer()) {
+      // Use zmq_poll to check for incoming data
+      // Timeout=10ms to allow I/O threads time to process incoming TCP data
+      zmq_pollitem_t poll_item = {socket_, 0, ZMQ_POLLIN, 0};
+      int poll_rc = zmq_poll(&poll_item, 1, 10);  // 10ms timeout
+      if (poll_rc <= 0 || !(poll_item.revents & ZMQ_POLLIN)) {
+        return EAGAIN;
+      }
+
+      // Periodic diagnostic
+      static thread_local uint64_t recv_diag_count = 0;
+      recv_diag_count++;
+      if (recv_diag_count % 100 == 1) {
+        HLOG(kInfo, "RecvMetadata ROUTER: zmq_poll returned POLLIN! "
+             "diag #{}, port={}", recv_diag_count, port_);
+      }
+
       zmq_msg_t identity_msg;
       zmq_msg_init(&identity_msg);
       int rc = zmq_msg_recv(&identity_msg, socket_, ZMQ_DONTWAIT);

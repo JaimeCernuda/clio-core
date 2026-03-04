@@ -14,6 +14,8 @@ class SSLClient;
 class Client;
 }  // namespace httplib
 
+namespace dt_provenance::tracker { class Client; }
+
 namespace dt_provenance::interception::anthropic {
 
 /**
@@ -27,7 +29,7 @@ class Runtime : public chi::Container {
   using CreateParams = dt_provenance::interception::anthropic::CreateParams;
 
   Runtime() = default;
-  ~Runtime() override = default;
+  ~Runtime() override;
 
   // Container interface
   void Init(const chi::PoolId& pool_id, const std::string& pool_name,
@@ -72,6 +74,10 @@ class Runtime : public chi::Container {
   int upstream_port_ = 443;
   bool upstream_ssl_ = true;
   std::atomic<uint64_t> active_requests_{0};
+
+  // Tracker dispatch (lazy-init)
+  std::unique_ptr<dt_provenance::tracker::Client> tracker_client_;
+  bool tracker_initialized_ = false;
 };
 
 }  // namespace dt_provenance::interception::anthropic

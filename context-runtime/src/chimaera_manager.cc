@@ -125,7 +125,7 @@ Chimaera::~Chimaera() {
 }
 
 bool Chimaera::ClientInit() {
-  HLOG(kInfo, "Chimaera::ClientInit");
+  HLOG(kDebug, "Chimaera::ClientInit");
   if (is_client_initialized_ || client_is_initializing_ ||
       runtime_is_initializing_) {
     return true;
@@ -163,13 +163,13 @@ bool Chimaera::ClientInit() {
   // IMPORTANT: Check g_admin directly, NOT CHI_ADMIN macro
   // CHI_ADMIN uses GetGlobalPtrVar which auto-creates with default constructor!
   if (g_admin == nullptr) {
-    HLOG(kInfo, "ClientInit: Creating admin client with kAdminPoolId={}",
+    HLOG(kDebug, "ClientInit: Creating admin client with kAdminPoolId={}",
          chi::kAdminPoolId);
     g_admin = new chimaera::admin::Client(chi::kAdminPoolId);
-    HLOG(kInfo, "ClientInit: Admin client created, pool_id_={}",
+    HLOG(kDebug, "ClientInit: Admin client created, pool_id_={}",
          g_admin->pool_id_);
   } else {
-    HLOG(kInfo, "ClientInit: g_admin already exists, pool_id_={}",
+    HLOG(kDebug, "ClientInit: g_admin already exists, pool_id_={}",
          g_admin->pool_id_);
   }
 
