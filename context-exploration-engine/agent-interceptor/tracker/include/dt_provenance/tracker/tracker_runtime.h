@@ -55,6 +55,7 @@ class Runtime : public chi::Container {
                           chi::RunContext& rctx);
 
   // Container virtual methods
+  chi::TaskStat GetTaskStats(chi::u32 method_id) const override;
   chi::u64 GetWorkRemaining() const override;
   void SaveTask(chi::u32 method, chi::SaveTaskArchive& archive,
                 hipc::FullPtr<chi::Task> task_ptr) override;

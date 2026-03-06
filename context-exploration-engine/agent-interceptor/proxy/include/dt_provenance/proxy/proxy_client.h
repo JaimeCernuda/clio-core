@@ -41,6 +41,15 @@ class Client : public chi::ContainerClient {
                                                    pool_id_, pool_query, query);
     return ipc_manager->Send(task);
   }
+
+  /** Forward HTTP request to upstream API (runs on I/O worker) */
+  chi::Future<ForwardHttpTask> AsyncForwardHttp(
+      const chi::PoolQuery& pool_query, const std::string& query_json) {
+    auto* ipc = CHI_IPC;
+    auto task = ipc->NewTask<ForwardHttpTask>(
+        chi::CreateTaskId(), pool_id_, pool_query, query_json);
+    return ipc->Send(task);
+  }
 };
 
 }  // namespace dt_provenance::proxy

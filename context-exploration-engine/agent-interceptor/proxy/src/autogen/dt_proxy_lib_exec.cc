@@ -19,18 +19,19 @@ chi::TaskResume Runtime::Run(chi::u32 method, hipc::FullPtr<chi::Task> task_ptr,
                               chi::RunContext& rctx) {
   switch (method) {
     case Method::kCreate: {
-      auto typed_task = task_ptr.template Cast<CreateTask>();
-      co_await Create(typed_task, rctx);
+      co_await Create(task_ptr.template Cast<CreateTask>(), rctx);
       break;
     }
     case Method::kDestroy: {
-      auto typed_task = task_ptr.template Cast<DestroyTask>();
-      co_await Destroy(typed_task, rctx);
+      co_await Destroy(task_ptr.template Cast<DestroyTask>(), rctx);
       break;
     }
     case Method::kMonitor: {
-      auto typed_task = task_ptr.template Cast<MonitorTask>();
-      co_await Monitor(typed_task, rctx);
+      co_await Monitor(task_ptr.template Cast<MonitorTask>(), rctx);
+      break;
+    }
+    case Method::kForwardHttp: {
+      co_await ForwardHttp(task_ptr.template Cast<ForwardHttpTask>(), rctx);
       break;
     }
     default:
@@ -39,24 +40,19 @@ chi::TaskResume Runtime::Run(chi::u32 method, hipc::FullPtr<chi::Task> task_ptr,
   co_return;
 }
 
+#define SAVE_CASE(METHOD, TYPE) \
+  case Method::METHOD: archive << *task_ptr.template Cast<TYPE>().ptr_; break
+
+#define LOAD_CASE(METHOD, TYPE) \
+  case Method::METHOD: archive >> *task_ptr.template Cast<TYPE>().ptr_; break
+
 void Runtime::SaveTask(chi::u32 method, chi::SaveTaskArchive& archive,
                         hipc::FullPtr<chi::Task> task_ptr) {
   switch (method) {
-    case Method::kCreate: {
-      auto typed = task_ptr.template Cast<CreateTask>();
-      archive << *typed.ptr_;
-      break;
-    }
-    case Method::kDestroy: {
-      auto typed = task_ptr.template Cast<DestroyTask>();
-      archive << *typed.ptr_;
-      break;
-    }
-    case Method::kMonitor: {
-      auto typed = task_ptr.template Cast<MonitorTask>();
-      archive << *typed.ptr_;
-      break;
-    }
+    SAVE_CASE(kCreate, CreateTask);
+    SAVE_CASE(kDestroy, DestroyTask);
+    SAVE_CASE(kMonitor, MonitorTask);
+    SAVE_CASE(kForwardHttp, ForwardHttpTask);
     default: break;
   }
 }
@@ -64,21 +60,10 @@ void Runtime::SaveTask(chi::u32 method, chi::SaveTaskArchive& archive,
 void Runtime::LoadTask(chi::u32 method, chi::LoadTaskArchive& archive,
                         hipc::FullPtr<chi::Task> task_ptr) {
   switch (method) {
-    case Method::kCreate: {
-      auto typed = task_ptr.template Cast<CreateTask>();
-      archive >> *typed.ptr_;
-      break;
-    }
-    case Method::kDestroy: {
-      auto typed = task_ptr.template Cast<DestroyTask>();
-      archive >> *typed.ptr_;
-      break;
-    }
-    case Method::kMonitor: {
-      auto typed = task_ptr.template Cast<MonitorTask>();
-      archive >> *typed.ptr_;
-      break;
-    }
+    LOAD_CASE(kCreate, CreateTask);
+    LOAD_CASE(kDestroy, DestroyTask);
+    LOAD_CASE(kMonitor, MonitorTask);
+    LOAD_CASE(kForwardHttp, ForwardHttpTask);
     default: break;
   }
 }
@@ -86,9 +71,7 @@ void Runtime::LoadTask(chi::u32 method, chi::LoadTaskArchive& archive,
 hipc::FullPtr<chi::Task> Runtime::AllocLoadTask(
     chi::u32 method, chi::LoadTaskArchive& archive) {
   auto task_ptr = NewTask(method);
-  if (!task_ptr.IsNull()) {
-    LoadTask(method, archive, task_ptr);
-  }
+  if (!task_ptr.IsNull()) LoadTask(method, archive, task_ptr);
   return task_ptr;
 }
 
@@ -96,21 +79,10 @@ void Runtime::LocalLoadTask(chi::u32 method,
                              chi::LocalLoadTaskArchive& archive,
                              hipc::FullPtr<chi::Task> task_ptr) {
   switch (method) {
-    case Method::kCreate: {
-      auto typed = task_ptr.template Cast<CreateTask>();
-      archive >> *typed.ptr_;
-      break;
-    }
-    case Method::kDestroy: {
-      auto typed = task_ptr.template Cast<DestroyTask>();
-      archive >> *typed.ptr_;
-      break;
-    }
-    case Method::kMonitor: {
-      auto typed = task_ptr.template Cast<MonitorTask>();
-      archive >> *typed.ptr_;
-      break;
-    }
+    LOAD_CASE(kCreate, CreateTask);
+    LOAD_CASE(kDestroy, DestroyTask);
+    LOAD_CASE(kMonitor, MonitorTask);
+    LOAD_CASE(kForwardHttp, ForwardHttpTask);
     default: break;
   }
 }
@@ -118,9 +90,7 @@ void Runtime::LocalLoadTask(chi::u32 method,
 hipc::FullPtr<chi::Task> Runtime::LocalAllocLoadTask(
     chi::u32 method, chi::LocalLoadTaskArchive& archive) {
   auto task_ptr = NewTask(method);
-  if (!task_ptr.IsNull()) {
-    LocalLoadTask(method, archive, task_ptr);
-  }
+  if (!task_ptr.IsNull()) LocalLoadTask(method, archive, task_ptr);
   return task_ptr;
 }
 
@@ -128,115 +98,91 @@ void Runtime::LocalSaveTask(chi::u32 method,
                               chi::LocalSaveTaskArchive& archive,
                               hipc::FullPtr<chi::Task> task_ptr) {
   switch (method) {
-    case Method::kCreate: {
-      auto typed = task_ptr.template Cast<CreateTask>();
-      archive << *typed.ptr_;
-      break;
-    }
-    case Method::kDestroy: {
-      auto typed = task_ptr.template Cast<DestroyTask>();
-      archive << *typed.ptr_;
-      break;
-    }
-    case Method::kMonitor: {
-      auto typed = task_ptr.template Cast<MonitorTask>();
-      archive << *typed.ptr_;
-      break;
-    }
+    SAVE_CASE(kCreate, CreateTask);
+    SAVE_CASE(kDestroy, DestroyTask);
+    SAVE_CASE(kMonitor, MonitorTask);
+    SAVE_CASE(kForwardHttp, ForwardHttpTask);
     default: break;
   }
 }
+
+#undef SAVE_CASE
+#undef LOAD_CASE
+
+#define COPY_CASE(METHOD, TYPE) \
+  case Method::METHOD: { \
+    auto p = ipc->NewTask<TYPE>(); \
+    if (!p.IsNull()) { p->Copy(orig.template Cast<TYPE>()); return p.template Cast<chi::Task>(); } \
+    break; \
+  }
 
 hipc::FullPtr<chi::Task> Runtime::NewCopyTask(
-    chi::u32 method, hipc::FullPtr<chi::Task> orig_task_ptr, bool deep) {
-  auto* ipc_manager = CHI_IPC;
-  if (!ipc_manager) return hipc::FullPtr<chi::Task>();
+    chi::u32 method, hipc::FullPtr<chi::Task> orig, bool deep) {
+  auto* ipc = CHI_IPC;
+  if (!ipc) return {};
+  (void)deep;
 
   switch (method) {
-    case Method::kCreate: {
-      auto p = ipc_manager->NewTask<CreateTask>();
-      if (!p.IsNull()) {
-        p->Copy(orig_task_ptr.template Cast<CreateTask>());
-        return p.template Cast<chi::Task>();
-      }
-      break;
-    }
-    case Method::kDestroy: {
-      auto p = ipc_manager->NewTask<DestroyTask>();
-      if (!p.IsNull()) {
-        p->Copy(orig_task_ptr.template Cast<DestroyTask>());
-        return p.template Cast<chi::Task>();
-      }
-      break;
-    }
-    case Method::kMonitor: {
-      auto p = ipc_manager->NewTask<MonitorTask>();
-      if (!p.IsNull()) {
-        p->Copy(orig_task_ptr.template Cast<MonitorTask>());
-        return p.template Cast<chi::Task>();
-      }
-      break;
-    }
+    COPY_CASE(kCreate, CreateTask)
+    COPY_CASE(kDestroy, DestroyTask)
+    COPY_CASE(kMonitor, MonitorTask)
+    COPY_CASE(kForwardHttp, ForwardHttpTask)
     default: break;
   }
-  (void)deep;
-  return hipc::FullPtr<chi::Task>();
+  return {};
 }
+
+#undef COPY_CASE
+
+#define NEW_CASE(METHOD, TYPE) \
+  case Method::METHOD: return ipc->NewTask<TYPE>().template Cast<chi::Task>()
 
 hipc::FullPtr<chi::Task> Runtime::NewTask(chi::u32 method) {
-  auto* ipc_manager = CHI_IPC;
-  if (!ipc_manager) return hipc::FullPtr<chi::Task>();
+  auto* ipc = CHI_IPC;
+  if (!ipc) return {};
 
   switch (method) {
-    case Method::kCreate:
-      return ipc_manager->NewTask<CreateTask>().template Cast<chi::Task>();
-    case Method::kDestroy:
-      return ipc_manager->NewTask<DestroyTask>().template Cast<chi::Task>();
-    case Method::kMonitor:
-      return ipc_manager->NewTask<MonitorTask>().template Cast<chi::Task>();
-    default:
-      return hipc::FullPtr<chi::Task>();
+    NEW_CASE(kCreate, CreateTask);
+    NEW_CASE(kDestroy, DestroyTask);
+    NEW_CASE(kMonitor, MonitorTask);
+    NEW_CASE(kForwardHttp, ForwardHttpTask);
+    default: return {};
   }
 }
 
-void Runtime::Aggregate(chi::u32 method, hipc::FullPtr<chi::Task> orig_task,
-                         const hipc::FullPtr<chi::Task>& replica_task) {
+#undef NEW_CASE
+
+#define AGG_CASE(METHOD, TYPE) \
+  case Method::METHOD: orig.template Cast<TYPE>()->Aggregate(replica); break
+
+void Runtime::Aggregate(chi::u32 method, hipc::FullPtr<chi::Task> orig,
+                         const hipc::FullPtr<chi::Task>& replica) {
   switch (method) {
-    case Method::kCreate: {
-      orig_task.template Cast<CreateTask>()->Aggregate(replica_task);
-      break;
-    }
-    case Method::kDestroy: {
-      orig_task.template Cast<DestroyTask>()->Aggregate(replica_task);
-      break;
-    }
-    case Method::kMonitor: {
-      orig_task.template Cast<MonitorTask>()->Aggregate(replica_task);
-      break;
-    }
-    default:
-      orig_task->Aggregate(replica_task);
-      break;
+    AGG_CASE(kCreate, CreateTask);
+    AGG_CASE(kDestroy, DestroyTask);
+    AGG_CASE(kMonitor, MonitorTask);
+    AGG_CASE(kForwardHttp, ForwardHttpTask);
+    default: orig->Aggregate(replica); break;
   }
 }
+
+#undef AGG_CASE
+
+#define DEL_CASE(METHOD, TYPE) \
+  case Method::METHOD: ipc->DelTask(task_ptr.template Cast<TYPE>()); break
 
 void Runtime::DelTask(chi::u32 method, hipc::FullPtr<chi::Task> task_ptr) {
-  auto* ipc_manager = CHI_IPC;
-  if (!ipc_manager) return;
+  auto* ipc = CHI_IPC;
+  if (!ipc) return;
   switch (method) {
-    case Method::kCreate:
-      ipc_manager->DelTask(task_ptr.template Cast<CreateTask>());
-      break;
-    case Method::kDestroy:
-      ipc_manager->DelTask(task_ptr.template Cast<DestroyTask>());
-      break;
-    case Method::kMonitor:
-      ipc_manager->DelTask(task_ptr.template Cast<MonitorTask>());
-      break;
-    default:
-      ipc_manager->DelTask(task_ptr);
-      break;
+    DEL_CASE(kCreate, CreateTask);
+    DEL_CASE(kDestroy, DestroyTask);
+    DEL_CASE(kMonitor, MonitorTask);
+    DEL_CASE(kForwardHttp, ForwardHttpTask);
+    default: ipc->DelTask(task_ptr); break;
   }
 }
+
+#undef DEL_CASE
 
 }  // namespace dt_provenance::proxy

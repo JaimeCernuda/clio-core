@@ -9,6 +9,17 @@ namespace dt_provenance::ctx_untangler {
 
 using json = nlohmann::ordered_json;
 
+chi::TaskStat Runtime::GetTaskStats(chi::u32 method_id) const {
+  // ComputeDiff performs CTE GetBlob + PutBlob I/O — report io_size >= 4096
+  // so the DefaultScheduler routes it to an I/O worker instead of worker 0.
+  if (method_id == Method::kComputeDiff) {
+    chi::TaskStat stat;
+    stat.io_size_ = 8192;
+    return stat;
+  }
+  return chi::TaskStat();
+}
+
 std::string Runtime::FormatBlobName(uint64_t seq_id) {
   char buf[16];
   snprintf(buf, sizeof(buf), "%010lu", static_cast<unsigned long>(seq_id));

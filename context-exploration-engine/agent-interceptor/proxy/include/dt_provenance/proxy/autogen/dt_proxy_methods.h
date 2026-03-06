@@ -10,6 +10,8 @@ namespace Method {
 GLOBAL_CONST chi::u32 kCreate = 0;
 GLOBAL_CONST chi::u32 kDestroy = 1;
 GLOBAL_CONST chi::u32 kMonitor = 9;
+// Custom methods
+GLOBAL_CONST chi::u32 kForwardHttp = 10;
 }  // namespace Method
 
 }  // namespace dt_provenance::proxy

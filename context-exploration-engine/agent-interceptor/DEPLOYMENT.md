@@ -7,6 +7,7 @@ Deploy the DTProvenance agent interception pipeline on the Ares cluster. This sy
 ```
 Claude Agent  ──HTTP──▶  Flask Bridge (:9090)  ──IPC──▶  Chimaera Runtime (:9513)
                               │                              ├─ Proxy ChiMod (pool 800)
+                              │                              │    └─ ForwardHttp task → I/O Workers (1-5)
                               │                              ├─ Anthropic Interceptor (pool 801)
                               │                              ├─ OpenAI Interceptor (pool 802)
                               │                              ├─ Ollama Interceptor (pool 803)
@@ -17,13 +18,29 @@ Claude Agent  ──HTTP──▶  Flask Bridge (:9090)  ──IPC──▶  Chi
 Browser  ──HTTP──▶  Dashboard (/provenance)
 ```
 
+HTTP forwarding runs on Chimaera I/O workers (1-5), keeping Worker 0 free for scheduling. Multiple concurrent agents' API calls execute in parallel.
+
 ## Prerequisites
 
-- Ares cluster access with Spack `mchips` environment
+- Ares cluster access with Spack `mchips` environment at `/mnt/common/jcernudagarcia/spack/`
 - Claude Code OAuth token (auto-discovered from `~/.claude/`)
 - `uv` available for Python environment management
 
+## Key Files
+
+| File | Purpose |
+|------|---------|
+| `demo/wrp_conf.yaml` | Chimaera server compose config (all ChiMod pools) |
+| `demo/dt_demo_server.cc` | Server binary entry point |
+| `deploy/test_e2e.sh` | Full automated E2E test suite |
+| `deploy/run_agents.py` | Agent launcher using `claude-agent-sdk` |
+| `deploy/.venv/` | Python venv (created automatically by test scripts) |
+| `proxy/src/proxy_runtime.cc` | Proxy runtime (ForwardHttp + Monitor handlers) |
+| `tracker/src/tracker_runtime.cc` | Tracker runtime (CTE storage) |
+
 ## 1. Build
+
+**Build on a login node.** Compute nodes may lack `libaio.so`.
 
 ```bash
 # Activate build environment
@@ -31,7 +48,7 @@ source /mnt/common/jcernudagarcia/spack/share/spack/setup-env.sh
 spack env activate mchips
 
 # Clone and checkout
-git clone git@github.com:JaimeCernuda/clio-core.git
+git clone git@github.com:iowarp/clio-core.git
 cd clio-core
 git checkout DTProvenance
 git submodule update --init --recursive
@@ -50,7 +67,13 @@ ninja dt_provenance_dt_proxy_runtime \
       dt_provenance_dt_ctx_untangler_runtime
 ```
 
-**Note:** Build on a login node. Compute nodes may lack `libaio.so`.
+If building on a **compute node** (not recommended), disable ccache:
+```bash
+cmake .. -G Ninja -DCMAKE_BUILD_TYPE=Release \
+  -DWRP_CORE_ENABLE_CTE=ON \
+  -DWRP_CORE_ENABLE_CEE=ON \
+  -DCCACHE_PROGRAM=CCACHE_PROGRAM-NOTFOUND
+```
 
 ## 2. Deploy on a Compute Node
 
@@ -66,7 +89,8 @@ salloc -N 1
 source /mnt/common/jcernudagarcia/spack/share/spack/setup-env.sh
 spack env activate mchips
 
-REPO_ROOT=/path/to/clio-core
+# Adjust REPO_ROOT to wherever you cloned clio-core
+REPO_ROOT=$HOME/clio-core
 BUILD_DIR=$REPO_ROOT/build
 CONF_DIR=$REPO_ROOT/context-exploration-engine/agent-interceptor/demo
 VIS_DIR=$REPO_ROOT/context-visualizer
@@ -144,10 +168,13 @@ The dashboard supports:
 
 ## 5. E2E Test
 
-Run the full automated test suite:
+### Automated (recommended)
+
+The E2E test handles server startup, Flask, agent runs, and cleanup automatically:
 
 ```bash
-bash $DEPLOY_DIR/test_e2e.sh
+salloc -N 1
+bash $REPO_ROOT/context-exploration-engine/agent-interceptor/deploy/test_e2e.sh
 ```
 
 This tests:
@@ -157,6 +184,13 @@ This tests:
 - **5d**: New session (`/clear` equivalent)
 - **5e**: Persistence across server restart
 - **5f**: Dashboard integration (list_sessions query)
+
+### Multi-node scale test
+
+```bash
+salloc -N 2
+bash $REPO_ROOT/context-exploration-engine/agent-interceptor/deploy/test_multinode.sh --agents-per-node 4
+```
 
 ## 6. Stopping
 

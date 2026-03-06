@@ -257,14 +257,19 @@ chi::TaskResume Runtime::Monitor(hipc::FullPtr<MonitorTask> task,
                                  chi::RunContext& rctx) {
   std::string query_str(task->query_);
 
-  // 1. Try JSON-encoded forward request
+  // 1. Try JSON-encoded forward request — dispatch to I/O worker
   if (!query_str.empty() && query_str[0] == '{') {
     try {
       auto query = json::parse(query_str);
       if (query.contains("action") && query["action"] == "forward") {
-        auto record_json = HandleForwardRequest(task, query_str);
-        // Store interaction via tracker — co_await ensures proper Future
-        // lifecycle (fire-and-forget without await crashes the server).
+        // co_await yields Worker 0; ForwardHttp runs on I/O worker (1-5)
+        auto forward_future = client_.AsyncForwardHttp(
+            chi::PoolQuery::Local(), query_str);
+        co_await forward_future;
+        task->results_[container_id_] =
+            std::string(forward_future->response_msgpack_.str());
+        std::string record_json(forward_future->record_json_.str());
+        // Store interaction via tracker
         if (!record_json.empty() && EnsureTrackerClient()) {
           try {
             auto store_future = tracker_client_->AsyncStoreInteraction(
@@ -293,7 +298,7 @@ chi::TaskResume Runtime::Monitor(hipc::FullPtr<MonitorTask> task,
     msgpack::packer<msgpack::sbuffer> pk(sbuf);
     try {
       auto future = WRP_CTE_CLIENT->AsyncTagQuery(
-          "Agentic_session_.*", 0, chi::PoolQuery::Local());
+          "Agentic_session_.*", 0);
       co_await future;
       auto tag_names = future->results_;
       const std::string prefix = "Agentic_session_";
@@ -405,7 +410,7 @@ chi::TaskResume Runtime::Monitor(hipc::FullPtr<MonitorTask> task,
     msgpack::packer<msgpack::sbuffer> pk(sbuf);
     try {
       auto future = WRP_CTE_CLIENT->AsyncTagQuery(
-          "Ctx_graph_.*", 0, chi::PoolQuery::Local());
+          "Ctx_graph_.*", 0);
       co_await future;
       auto tag_names = future->results_;
       const std::string prefix = "Ctx_graph_";
@@ -528,10 +533,12 @@ chi::TaskResume Runtime::Monitor(hipc::FullPtr<MonitorTask> task,
   co_return;
 }
 
-// ── HandleForwardRequest ────────────────────────────────────────────────
+// ── ForwardHttp (runs on I/O worker) ────────────────────────────────────
 
-std::string Runtime::HandleForwardRequest(hipc::FullPtr<MonitorTask>& task,
-                                          const std::string& query_json) {
+chi::TaskResume Runtime::ForwardHttp(hipc::FullPtr<ForwardHttpTask> task,
+                                     chi::RunContext& rctx) {
+  (void)rctx;
+  std::string query_json(task->query_json_.str());
   auto query = json::parse(query_json);
   std::string session_id = query.value("session_id", "");
   std::string provider_name = query.value("provider", "");
@@ -544,7 +551,6 @@ std::string Runtime::HandleForwardRequest(hipc::FullPtr<MonitorTask>& task,
   std::string upstream_url = SelectUpstream(provider);
 
   if (upstream_url.empty()) {
-    // Unknown provider — pack error response
     msgpack::sbuffer sbuf;
     msgpack::packer<msgpack::sbuffer> pk(sbuf);
     pk.pack_map(3);
@@ -553,24 +559,25 @@ std::string Runtime::HandleForwardRequest(hipc::FullPtr<MonitorTask>& task,
     pk.pack("body");
     pk.pack(std::string(R"({"error":"unknown provider: )" +
                         provider_name + R"("})"));
-    task->results_[container_id_] = std::string(sbuf.data(), sbuf.size());
-    return "";
+    task->response_msgpack_ = std::string(sbuf.data(), sbuf.size());
+    task->record_json_ = "";
+    co_return;
   }
 
   total_requests_.fetch_add(1, std::memory_order_relaxed);
 
-  // Forward to upstream API
+  // Blocking HTTP call — OK, we're on an I/O worker, not Worker 0
   int resp_status = 502;
   std::string resp_headers, resp_body;
   double latency_ms = 0;
   ForwardDirect(upstream_url, path, headers_str, body,
                 resp_status, resp_headers, resp_body, latency_ms);
 
-  HLOG(kInfo, "Monitor forward: session={} provider={} status={} latency={}ms",
+  HLOG(kInfo, "ForwardHttp: session={} provider={} status={} latency={}ms",
        session_id, provider_name, resp_status,
        static_cast<int>(latency_ms));
 
-  // Build interaction record for tracker storage (returned to Monitor coroutine)
+  // Build interaction record for tracker storage
   std::string record_json;
   if (resp_status >= 200 && resp_status < 300) {
     try {
@@ -582,15 +589,28 @@ std::string Runtime::HandleForwardRequest(hipc::FullPtr<MonitorTask>& task,
     }
   }
 
-  // Pack response as msgpack into results
+  // Pack response as msgpack
   msgpack::sbuffer sbuf;
   msgpack::packer<msgpack::sbuffer> pk(sbuf);
   pk.pack_map(3);
   pk.pack("status"); pk.pack(resp_status);
   pk.pack("headers"); pk.pack(resp_headers);
   pk.pack("body"); pk.pack(resp_body);
-  task->results_[container_id_] = std::string(sbuf.data(), sbuf.size());
-  return record_json;
+  task->response_msgpack_ = std::string(sbuf.data(), sbuf.size());
+  task->record_json_ = record_json;
+  co_return;
+}
+
+// ── GetTaskStats ────────────────────────────────────────────────────────
+
+chi::TaskStat Runtime::GetTaskStats(chi::u32 method_id) const {
+  // Route ForwardHttp to I/O workers (io_size >= 4096 triggers I/O lane)
+  if (method_id == Method::kForwardHttp) {
+    chi::TaskStat stat;
+    stat.io_size_ = 8192;
+    return stat;
+  }
+  return chi::TaskStat();
 }
 
 // ── HandleDispatchStats ─────────────────────────────────────────────────

@@ -41,8 +41,11 @@ class Runtime : public chi::Container {
                           chi::RunContext& rctx);
   chi::TaskResume Destroy(hipc::FullPtr<DestroyTask> task,
                           chi::RunContext& rctx);
+  chi::TaskResume ForwardHttp(hipc::FullPtr<ForwardHttpTask> task,
+                              chi::RunContext& rctx);
 
   // Container virtual methods
+  chi::TaskStat GetTaskStats(chi::u32 method_id) const override;
   chi::u64 GetWorkRemaining() const override;
   void SaveTask(chi::u32 method, chi::SaveTaskArchive& archive,
                 hipc::FullPtr<chi::Task> task_ptr) override;
@@ -65,10 +68,6 @@ class Runtime : public chi::Container {
   void DelTask(chi::u32 method, hipc::FullPtr<chi::Task> task_ptr) override;
 
  private:
-  // Monitor handler helpers
-  // Returns record JSON for tracker storage (empty if no recording needed)
-  std::string HandleForwardRequest(hipc::FullPtr<MonitorTask>& task,
-                                   const std::string& query_json);
   void HandleDispatchStats(hipc::FullPtr<MonitorTask>& task);
 
   bool EnsureTrackerClient();

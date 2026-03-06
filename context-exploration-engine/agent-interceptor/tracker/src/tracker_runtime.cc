@@ -13,6 +13,17 @@ using json = nlohmann::ordered_json;
 
 Runtime::~Runtime() = default;
 
+chi::TaskStat Runtime::GetTaskStats(chi::u32 method_id) const {
+  // StoreInteraction performs CTE PutBlob I/O — report io_size >= 4096
+  // so the DefaultScheduler routes it to an I/O worker instead of worker 0.
+  if (method_id == Method::kStoreInteraction) {
+    chi::TaskStat stat;
+    stat.io_size_ = 8192;
+    return stat;
+  }
+  return chi::TaskStat();
+}
+
 std::string Runtime::FormatBlobName(uint64_t seq_id) {
   char buf[16];
   snprintf(buf, sizeof(buf), "%010lu", static_cast<unsigned long>(seq_id));
