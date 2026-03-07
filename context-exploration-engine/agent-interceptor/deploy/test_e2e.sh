@@ -54,7 +54,7 @@ fi
 # Ensure Flask and dependencies are installed in the venv
 if ! "$VENV_PYTHON" -c "import flask" 2>/dev/null; then
   echo "[setup] Installing Flask and dependencies..."
-  uv pip install --python "$VENV_PYTHON" flask msgpack
+  uv pip install --python "$VENV_PYTHON" flask msgpack pyyaml
 fi
 
 # ── 2. Start DTProvenance server (Chimaera — no httplib) ───────────────
