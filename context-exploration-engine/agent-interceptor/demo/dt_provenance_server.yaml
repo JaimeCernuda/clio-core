@@ -17,20 +17,20 @@ compose:
     bdev_type: ram
     capacity: "256MB"
 
-  # CTE for context storage (disabled — tracker uses in-memory store)
-  # - mod_name: wrp_cte_core
-  #   pool_name: cte_main
-  #   pool_query: local
-  #   pool_id: "512.0"
-  #   storage:
-  #     - path: "ram::cte_ram_tier1"
-  #       bdev_type: "ram"
-  #       capacity_limit: "256MB"
-  #       score: 1.0
-  #   dpe:
-  #     dpe_type: "max_bw"
-  #   targets:
-  #     neighborhood: 1
+  # CTE for context storage
+  - mod_name: wrp_cte_core
+    pool_name: cte_main
+    pool_query: local
+    pool_id: "512.0"
+    storage:
+      - path: "ram::cte_ram_tier1"
+        bdev_type: "ram"
+        capacity_limit: "256MB"
+        score: 1.0
+    dpe:
+      dpe_type: "max_bw"
+    targets:
+      neighborhood: 1
 
   # HTTP Proxy — receives agent requests on port 9090
   - mod_name: dt_provenance_dt_proxy
@@ -70,3 +70,9 @@ compose:
     pool_name: dt_tracker_pool
     pool_query: local
     pool_id: "810.0"
+
+  # Context Untangler — computes diffs, writes Ctx_graph_<session_id> CTE tags
+  - mod_name: dt_provenance_dt_ctx_untangler
+    pool_name: dt_ctx_untangler_pool
+    pool_query: local
+    pool_id: "820.0"

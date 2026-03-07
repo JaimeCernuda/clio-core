@@ -1,20 +1,22 @@
 #!/bin/bash
 # Test Flask bridge: HTTP → Chimaera Monitor → upstream API
 set +e
-source /mnt/common/jcernudagarcia/spack/share/spack/setup-env.sh
+SPACK_PATH="${SPACK_PATH:-$HOME/spack}"
+source "$SPACK_PATH/share/spack/setup-env.sh"
 spack env activate mchips
 
-WORKTREE="/mnt/common/jcernudagarcia/clio-core/.claude/worktrees/read_path"
-BUILD_DIR="$WORKTREE/build"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+BUILD_DIR="$REPO_ROOT/build"
 export LD_LIBRARY_PATH="$BUILD_DIR/bin:${LD_LIBRARY_PATH:-}"
 export CHI_REPO_PATH="$BUILD_DIR/bin"
-export CHI_SERVER_CONF="$WORKTREE/context-exploration-engine/agent-interceptor/demo/wrp_conf.yaml"
+export CHI_SERVER_CONF="$REPO_ROOT/context-exploration-engine/agent-interceptor/demo/wrp_conf.yaml"
 export PYTHONPATH="$BUILD_DIR/bin:${PYTHONPATH:-}"
 export BUILD_DIR
 
 FLASK_PORT=9090
-FLASK_APP="$WORKTREE/context-visualizer/context_visualizer/app.py"
-VENV_PYTHON="$WORKTREE/context-exploration-engine/agent-interceptor/deploy/.venv/bin/python3"
+FLASK_APP="$REPO_ROOT/context-visualizer/context_visualizer/app.py"
+VENV_PYTHON="$SCRIPT_DIR/.venv/bin/python3"
 
 # Cleanup from previous runs
 pkill -9 -f dt_demo_server 2>/dev/null || true
@@ -38,11 +40,11 @@ echo "[1] Chimaera server alive (PID=$SERVER_PID)"
 
 echo ""
 echo "[2] Starting Flask bridge on port $FLASK_PORT..."
-cd "$WORKTREE/context-visualizer"
+cd "$REPO_ROOT/context-visualizer"
 FLASK_APP=context_visualizer.app FLASK_ENV=development \
   "$VENV_PYTHON" -m flask run --host 0.0.0.0 --port $FLASK_PORT > "$FLASK_LOG" 2>&1 &
 FLASK_PID=$!
-cd "$WORKTREE"
+cd "$SCRIPT_DIR"
 sleep 5
 
 if ! kill -0 $FLASK_PID 2>/dev/null; then

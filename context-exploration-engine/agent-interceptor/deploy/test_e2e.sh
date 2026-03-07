@@ -20,7 +20,8 @@ echo "Date:  $(date)"
 echo ""
 
 # ── 0. Environment ──────────────────────────────────────────────────────
-source /mnt/common/jcernudagarcia/spack/share/spack/setup-env.sh
+SPACK_PATH="${SPACK_PATH:-$HOME/spack}"
+source "$SPACK_PATH/share/spack/setup-env.sh"
 spack env activate mchips
 
 export LD_LIBRARY_PATH="$BUILD_DIR/bin:${LD_LIBRARY_PATH:-}"
@@ -34,7 +35,7 @@ unset CLAUDECODE 2>/dev/null || true
 # Clean up any leftover server/flask from previous runs
 pkill -f dt_demo_server 2>/dev/null || true
 pkill -f "flask run.*$PROXY_PORT" 2>/dev/null || true
-rm -f /tmp/chimaera_jcernudagarcia/chimaera_9513.ipc 2>/dev/null || true
+rm -f "/tmp/chimaera_$(whoami)/chimaera_9513.ipc" 2>/dev/null || true
 sleep 2
 
 # ── 1. Set up Python venv with claude-agent-sdk ─────────────────────────
@@ -100,7 +101,7 @@ cleanup() {
   kill -9 $FLASK_PID 2>/dev/null || true
   echo "[cleanup] Stopping Chimaera server (PID=$SERVER_PID, SIGKILL)..."
   kill -9 $SERVER_PID 2>/dev/null || true
-  rm -f /tmp/chimaera_jcernudagarcia/chimaera_9513.ipc 2>/dev/null || true
+  rm -f "/tmp/chimaera_$(whoami)/chimaera_9513.ipc" 2>/dev/null || true
 }
 trap cleanup EXIT
 
@@ -112,7 +113,7 @@ echo ""
 echo "=== Test 5f: Dashboard Integration (pre-agent baseline) ==="
 echo "[5f] Querying list_sessions via direct Chimaera IPC client..."
 TEST5F_FILE=$(mktemp /tmp/test5f_XXXXXX.json)
-timeout 30 python3 -c "
+timeout 30 "$VENV_PYTHON" -c "
 import os, sys, json
 os.environ.setdefault('CHI_CLIENT_RETRY_TIMEOUT', '0')
 os.environ['CHI_WAIT_SERVER'] = '10'
@@ -211,7 +212,7 @@ if kill -0 $SERVER_PID 2>/dev/null; then
   echo "=== Test 5f-post: Dashboard Integration (post-agent) ==="
   echo "[5f-post] Querying list_sessions after agent tests..."
   TEST5F_POST_FILE=$(mktemp /tmp/test5f_post_XXXXXX.json)
-  timeout 30 python3 -c "
+  timeout 30 "$VENV_PYTHON" -c "
 import os, sys, json
 os.environ.setdefault('CHI_CLIENT_RETRY_TIMEOUT', '0')
 os.environ['CHI_WAIT_SERVER'] = '10'
@@ -254,7 +255,7 @@ wait $FLASK_PID 2>/dev/null || true
 echo "[5e] Killing Chimaera server..."
 kill -9 $SERVER_PID 2>/dev/null || true
 wait $SERVER_PID 2>/dev/null || true
-rm -f /tmp/chimaera_jcernudagarcia/chimaera_9513.ipc 2>/dev/null || true
+rm -f "/tmp/chimaera_$(whoami)/chimaera_9513.ipc" 2>/dev/null || true
 sleep 3
 
 echo "[5e] Restarting Chimaera server..."
