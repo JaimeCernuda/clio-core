@@ -6,6 +6,7 @@ import time
 from flask import Blueprint, Response, jsonify, request
 
 from .. import chimaera_client
+from ..analysis.context_graph import compute_analysis
 
 bp = Blueprint("provenance", __name__)
 
@@ -23,6 +24,23 @@ def _flatten_results(raw):
             except (json.JSONDecodeError, TypeError):
                 return data
     return []
+
+
+def _flatten_and_parse(raw):
+    """Flatten monitor results and parse any JSON-string items."""
+    items = _flatten_results(raw)
+    if not isinstance(items, list):
+        items = [items] if items else []
+    parsed = []
+    for item in items:
+        if isinstance(item, str):
+            try:
+                parsed.append(json.loads(item))
+            except (json.JSONDecodeError, TypeError):
+                parsed.append(item)
+        else:
+            parsed.append(item)
+    return parsed
 
 
 @bp.route("/sessions")
@@ -136,3 +154,29 @@ def stream_context_graph(session_id):
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@bp.route("/session/<session_id>/analysis")
+def get_session_analysis(session_id):
+    """Compute rich analysis data for all visualization charts.
+
+    Accepts an optional ?include=id1,id2,... query param to merge additional
+    sessions (e.g. child/subagent sessions) into the analysis.
+    """
+    extra = [s for s in request.args.get("include", "").split(",") if s]
+    all_ids = [session_id] + extra
+
+    all_interactions = []
+    all_nodes = []
+    for sid in all_ids:
+        try:
+            raw_i = chimaera_client.get_session_interactions(sid)
+            raw_n = chimaera_client.get_context_graph(sid)
+        except Exception as exc:
+            if sid == session_id:
+                return jsonify({"error": str(exc)}), 503
+            continue
+        all_interactions.extend(_flatten_and_parse(raw_i))
+        all_nodes.extend(_flatten_and_parse(raw_n))
+
+    return jsonify(compute_analysis(all_interactions, all_nodes))

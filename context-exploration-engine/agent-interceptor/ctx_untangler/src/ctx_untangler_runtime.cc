@@ -131,15 +131,20 @@ chi::TaskResume Runtime::ComputeDiff(hipc::FullPtr<ComputeDiffTask> task,
 
   // 3. Extract metrics from current interaction
   int64_t input_tokens = 0, output_tokens = 0;
+  int64_t cache_read_tokens = 0, cache_creation_tokens = 0;
   double cost_usd = 0.0, latency_ms = 0.0, ttft_ms = 0.0;
   if (interaction.contains("metrics")) {
     const auto& m = interaction["metrics"];
     input_tokens = m.value("input_tokens", (int64_t)0);
     output_tokens = m.value("output_tokens", (int64_t)0);
+    cache_read_tokens = m.value("cache_read_tokens", (int64_t)0);
+    cache_creation_tokens = m.value("cache_creation_tokens", (int64_t)0);
     cost_usd = m.value("cost_usd", 0.0);
     latency_ms = m.value("total_latency_ms", 0.0);
     ttft_ms = m.value("time_to_first_token_ms", 0.0);
   }
+  // Effective context window = all tokens sent to the model, cached or not
+  int64_t effective_input_tokens = input_tokens + cache_read_tokens + cache_creation_tokens;
 
   // Count messages in request body
   int64_t message_count = 0;
@@ -160,6 +165,7 @@ chi::TaskResume Runtime::ComputeDiff(hipc::FullPtr<ComputeDiffTask> task,
 
   // 4. Extract metrics from previous interaction (for deltas)
   int64_t prev_input_tokens = 0, prev_output_tokens = 0;
+  int64_t prev_cache_read_tokens = 0, prev_cache_creation_tokens = 0;
   double prev_cost_usd = 0.0;
   int64_t prev_message_count = 0;
   if (!prev_interaction.is_null()) {
@@ -167,6 +173,8 @@ chi::TaskResume Runtime::ComputeDiff(hipc::FullPtr<ComputeDiffTask> task,
       const auto& pm = prev_interaction["metrics"];
       prev_input_tokens = pm.value("input_tokens", (int64_t)0);
       prev_output_tokens = pm.value("output_tokens", (int64_t)0);
+      prev_cache_read_tokens = pm.value("cache_read_tokens", (int64_t)0);
+      prev_cache_creation_tokens = pm.value("cache_creation_tokens", (int64_t)0);
       prev_cost_usd = pm.value("cost_usd", 0.0);
     }
     if (prev_interaction.contains("request") &&
@@ -176,6 +184,8 @@ chi::TaskResume Runtime::ComputeDiff(hipc::FullPtr<ComputeDiffTask> task,
           prev_interaction["request"]["body"]["messages"].size());
     }
   }
+  int64_t prev_effective_input_tokens =
+      prev_input_tokens + prev_cache_read_tokens + prev_cache_creation_tokens;
 
   // 5. Determine event_type
   std::string event_type;
@@ -196,13 +206,17 @@ chi::TaskResume Runtime::ComputeDiff(hipc::FullPtr<ComputeDiffTask> task,
   diff_node["timestamp"] = interaction.value("timestamp", "");
   diff_node["model"] = interaction.value("model", "");
 
-  // Total tokens
+  // Billing tokens (uncached only)
   diff_node["total_input_tokens"] = input_tokens;
   diff_node["total_output_tokens"] = output_tokens;
 
-  // Delta tokens
+  // Effective context-window tokens (billing + cached)
+  diff_node["total_effective_input_tokens"] = effective_input_tokens;
+
+  // Deltas
   diff_node["delta_input_tokens"] = input_tokens - prev_input_tokens;
   diff_node["delta_output_tokens"] = output_tokens - prev_output_tokens;
+  diff_node["delta_effective_input_tokens"] = effective_input_tokens - prev_effective_input_tokens;
 
   // Message counts
   diff_node["message_count"] = message_count;

@@ -7,11 +7,13 @@ CONF_DIR=$REPO_ROOT/context-exploration-engine/agent-interceptor/demo
 DEPLOY_DIR=$REPO_ROOT/context-exploration-engine/agent-interceptor/deploy
 VIS_DIR=$REPO_ROOT/context-visualizer
 PROXY_PORT=9090
-VENV_PYTHON="$DEPLOY_DIR/.venv/bin/python"
-
 # Environment
-source ${HOME}/spack/share/spack/setup-env.sh
+source ${HOME}/install/spack/share/spack/setup-env.sh
 spack env activate mchips
+
+# Use the spack Python 3.11 (matches chimaera_runtime_ext.cpython-311 ABI).
+# The deploy venv symlinks to miniconda Python 3.12 which cannot load the ext.
+VENV_PYTHON="$(which python3)"
 
 export LD_LIBRARY_PATH="$BUILD_DIR/bin:${LD_LIBRARY_PATH:-}"
 export CHI_SERVER_CONF="$CONF_DIR/wrp_conf.yaml"

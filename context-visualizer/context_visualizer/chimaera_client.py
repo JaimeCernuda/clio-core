@@ -422,6 +422,88 @@ def get_context_node(session_id, seq_id):
     return _monitor("local", f"pool_stats://800.0:local:get_node://{session_id}/{seq_id}")
 
 
+def store_recovery_event(event_dict: dict) -> str:
+    """Store a recovery event in CTE under Recovery_<target_session_id>.
+
+    Returns the blob name (event_id UUID) used for storage.
+    """
+    import json as _json
+    payload = _json.dumps(event_dict)
+    result = _monitor("local", f"pool_stats://800.0:local:store_recovery_event://{payload}")
+    for _, blob_name in result.items():
+        if isinstance(blob_name, str):
+            return blob_name
+    return event_dict.get("event_id", "")
+
+
+def get_recovery_events(session_id: str) -> list:
+    """Return all recovery events for a session, sorted by timestamp.
+
+    Each element is a dict with all event fields plus a ``blob_name`` key.
+    """
+    import json as _json
+    result = _monitor("local", f"pool_stats://800.0:local:query_recovery_events://{session_id}")
+    events = []
+    for _, pairs in result.items():
+        if not isinstance(pairs, list):
+            continue
+        for pair in pairs:
+            if not isinstance(pair, list) or len(pair) != 2:
+                continue
+            blob_name, json_str = pair[0], pair[1]
+            try:
+                ev = _json.loads(json_str) if isinstance(json_str, str) else json_str
+                ev["blob_name"] = blob_name
+                events.append(ev)
+            except Exception:
+                pass
+    events.sort(key=lambda e: e.get("timestamp", ""))
+    return events
+
+
+def ack_recovery_event(session_id: str, blob_name: str) -> None:
+    """Acknowledge a single recovery event (sets acknowledged=true in CTE)."""
+    _monitor("local", f"pool_stats://800.0:local:ack_recovery_event://{session_id}/{blob_name}")
+
+
+def store_lg_checkpoint(tag_name: str, data_dict: dict) -> str:
+    """Store a LangGraph checkpoint blob.
+
+    Returns the blob name (monotonic counter, zero-padded 10 digits).
+    """
+    import json as _json
+    payload = _json.dumps(data_dict)
+    result = _monitor("local", f"pool_stats://800.0:local:store_lg_checkpoint://{tag_name}/{payload}")
+    for _, blob_name in result.items():
+        if isinstance(blob_name, str):
+            return blob_name
+    return ""
+
+
+def query_lg_checkpoints(tag_name: str) -> list:
+    """Return all LangGraph checkpoints for a tag, sorted by blob name (ascending).
+
+    Each element is a (blob_name, checkpoint_dict) tuple.
+    """
+    import json as _json
+    result = _monitor("local", f"pool_stats://800.0:local:query_lg_checkpoints://{tag_name}")
+    pairs = []
+    for _, raw in result.items():
+        if not isinstance(raw, list):
+            continue
+        for pair in raw:
+            if not isinstance(pair, list) or len(pair) != 2:
+                continue
+            blob_name, json_str = pair[0], pair[1]
+            try:
+                data = _json.loads(json_str) if isinstance(json_str, str) else json_str
+                pairs.append((blob_name, data))
+            except Exception:
+                pass
+    pairs.sort(key=lambda p: p[0])
+    return pairs
+
+
 def finalize():
     """Clean shutdown of the Chimaera client."""
     global _init_done

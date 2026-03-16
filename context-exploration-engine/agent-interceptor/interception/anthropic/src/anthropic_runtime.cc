@@ -1,5 +1,6 @@
 #include "dt_provenance/interception/anthropic/anthropic_runtime.h"
 
+#include <algorithm>
 #include <chrono>
 #include <nlohmann/json.hpp>
 
@@ -132,10 +133,12 @@ chi::TaskResume Runtime::InterceptAndForward(
   task->latency_ms_ = latency_ms;
   task->ttft_ms_ = latency_ms;  // For non-streaming; TODO: measure TTFT for SSE
 
-  // Serialize response headers
+  // Serialize response headers (normalize keys to lowercase for consistent lookup)
   json resp_hdrs_json = json::object();
   for (const auto& [k, v] : response_headers) {
-    resp_hdrs_json[k] = v;
+    std::string lower_k = k;
+    std::transform(lower_k.begin(), lower_k.end(), lower_k.begin(), ::tolower);
+    resp_hdrs_json[lower_k] = v;
   }
   task->response_headers_json_ = resp_hdrs_json.dump();
   task->response_body_ = response_body;

@@ -1,5 +1,6 @@
 #include "dt_provenance/proxy/proxy_runtime.h"
 
+#include <algorithm>
 #include <chrono>
 
 #define CPPHTTPLIB_OPENSSL_SUPPORT
@@ -128,10 +129,12 @@ static void ForwardDirect(const std::string& upstream_url,
   auto end = std::chrono::steady_clock::now();
   latency_ms = std::chrono::duration<double, std::milli>(end - start).count();
 
-  // Serialize response headers
+  // Serialize response headers (normalize keys to lowercase for consistent lookup)
   json resp_hdrs_json = json::object();
   for (const auto& [k, v] : response_headers) {
-    resp_hdrs_json[k] = v;
+    std::string lower_k = k;
+    std::transform(lower_k.begin(), lower_k.end(), lower_k.begin(), ::tolower);
+    resp_hdrs_json[lower_k] = v;
   }
 
   resp_status = response_status;
@@ -523,6 +526,235 @@ chi::TaskResume Runtime::Monitor(hipc::FullPtr<MonitorTask> task,
       }
     } else {
       pk.pack("{}");
+    }
+    task->results_[container_id_] = std::string(sbuf.data(), sbuf.size());
+    task->SetReturnCode(0);
+    co_return;
+  }
+
+  // 5. Recovery event handlers
+  if (query_str.rfind("store_recovery_event://", 0) == 0) {
+    std::string json_payload = query_str.substr(23);
+    msgpack::sbuffer sbuf;
+    msgpack::packer<msgpack::sbuffer> pk(sbuf);
+    try {
+      auto payload_json = json::parse(json_payload);
+      std::string event_id = payload_json.value("event_id", "");
+      std::string target_session_id = payload_json.value("target_session_id", "");
+      if (!event_id.empty() && !target_session_id.empty()) {
+        std::string tag_name = "Recovery_" + target_session_id;
+        auto tag_future = WRP_CTE_CLIENT->AsyncGetOrCreateTag(tag_name);
+        co_await tag_future;
+        auto tag_id = tag_future->tag_id_;
+        auto *ipc = CHI_IPC;
+        size_t payload_size = json_payload.size();
+        auto shm = ipc->AllocateBuffer(payload_size);
+        if (!shm.IsNull()) {
+          memcpy(shm.ptr_, json_payload.data(), payload_size);
+          auto put_future = WRP_CTE_CLIENT->AsyncPutBlob(
+              tag_id, event_id, 0, payload_size, hipc::ShmPtr<>(shm.shm_));
+          co_await put_future;
+          ipc->FreeBuffer(shm);
+          pk.pack(event_id);
+        } else {
+          pk.pack("");
+        }
+      } else {
+        pk.pack("");
+      }
+    } catch (...) {
+      pk.pack("");
+    }
+    task->results_[container_id_] = std::string(sbuf.data(), sbuf.size());
+    task->SetReturnCode(0);
+    co_return;
+  }
+
+  if (query_str.rfind("query_recovery_events://", 0) == 0) {
+    std::string session_id = query_str.substr(24);
+    std::string tag_name = "Recovery_" + session_id;
+    msgpack::sbuffer sbuf;
+    msgpack::packer<msgpack::sbuffer> pk(sbuf);
+    try {
+      auto tag_future = WRP_CTE_CLIENT->AsyncGetOrCreateTag(tag_name);
+      co_await tag_future;
+      auto tag_id = tag_future->tag_id_;
+      auto blobs_future = WRP_CTE_CLIENT->AsyncGetContainedBlobs(tag_id);
+      co_await blobs_future;
+      auto& blobs = blobs_future->blob_names_;
+      auto *ipc = CHI_IPC;
+      pk.pack_array(static_cast<uint32_t>(blobs.size()));
+      for (const auto& bname : blobs) {
+        auto size_future = WRP_CTE_CLIENT->AsyncGetBlobSize(tag_id, bname);
+        co_await size_future;
+        auto size = size_future->size_;
+        if (size == 0) {
+          pk.pack_array(2); pk.pack(bname); pk.pack("");
+          continue;
+        }
+        auto shm = ipc->AllocateBuffer(size);
+        if (shm.IsNull()) {
+          pk.pack_array(2); pk.pack(bname); pk.pack("");
+          continue;
+        }
+        auto get_future = WRP_CTE_CLIENT->AsyncGetBlob(
+            tag_id, bname, 0, size, 0, hipc::ShmPtr<>(shm.shm_));
+        co_await get_future;
+        std::string json_str(reinterpret_cast<char*>(shm.ptr_), size);
+        pk.pack_array(2); pk.pack(bname); pk.pack(json_str);
+        ipc->FreeBuffer(shm);
+      }
+    } catch (...) {
+      pk.pack_array(0);
+    }
+    task->results_[container_id_] = std::string(sbuf.data(), sbuf.size());
+    task->SetReturnCode(0);
+    co_return;
+  }
+
+  if (query_str.rfind("ack_recovery_event://", 0) == 0) {
+    std::string body = query_str.substr(21);
+    auto slash = body.find('/');
+    msgpack::sbuffer sbuf;
+    msgpack::packer<msgpack::sbuffer> pk(sbuf);
+    if (slash != std::string::npos) {
+      std::string session_id = body.substr(0, slash);
+      std::string blob_name = body.substr(slash + 1);
+      std::string tag_name = "Recovery_" + session_id;
+      try {
+        auto tag_future = WRP_CTE_CLIENT->AsyncGetOrCreateTag(tag_name);
+        co_await tag_future;
+        auto tag_id = tag_future->tag_id_;
+        auto size_future = WRP_CTE_CLIENT->AsyncGetBlobSize(tag_id, blob_name);
+        co_await size_future;
+        auto size = size_future->size_;
+        std::string updated_json;
+        if (size > 0) {
+          auto *ipc = CHI_IPC;
+          auto shm = ipc->AllocateBuffer(size);
+          if (!shm.IsNull()) {
+            auto get_future = WRP_CTE_CLIENT->AsyncGetBlob(
+                tag_id, blob_name, 0, size, 0, hipc::ShmPtr<>(shm.shm_));
+            co_await get_future;
+            std::string json_str(reinterpret_cast<char*>(shm.ptr_), size);
+            ipc->FreeBuffer(shm);
+            try {
+              auto evt_json = json::parse(json_str);
+              evt_json["acknowledged"] = true;
+              updated_json = evt_json.dump();
+            } catch (...) {
+              updated_json = json_str;
+            }
+          }
+        }
+        if (!updated_json.empty()) {
+          auto *ipc = CHI_IPC;
+          size_t new_size = updated_json.size();
+          auto shm = ipc->AllocateBuffer(new_size);
+          if (!shm.IsNull()) {
+            memcpy(shm.ptr_, updated_json.data(), new_size);
+            auto put_future = WRP_CTE_CLIENT->AsyncPutBlob(
+                tag_id, blob_name, 0, new_size, hipc::ShmPtr<>(shm.shm_));
+            co_await put_future;
+            ipc->FreeBuffer(shm);
+            pk.pack("ok");
+          } else {
+            pk.pack("error");
+          }
+        } else {
+          pk.pack("error");
+        }
+      } catch (...) {
+        pk.pack("error");
+      }
+    } else {
+      pk.pack("error");
+    }
+    task->results_[container_id_] = std::string(sbuf.data(), sbuf.size());
+    task->SetReturnCode(0);
+    co_return;
+  }
+
+  // 6. Logged checkpoint handlers
+  if (query_str.rfind("store_lg_checkpoint://", 0) == 0) {
+    std::string body = query_str.substr(22);
+    auto slash = body.find('/');
+    msgpack::sbuffer sbuf;
+    msgpack::packer<msgpack::sbuffer> pk(sbuf);
+    if (slash != std::string::npos) {
+      std::string tag_name = body.substr(0, slash);
+      std::string json_payload = body.substr(slash + 1);
+      try {
+        auto tag_future = WRP_CTE_CLIENT->AsyncGetOrCreateTag(tag_name);
+        co_await tag_future;
+        auto tag_id = tag_future->tag_id_;
+        auto blobs_future = WRP_CTE_CLIENT->AsyncGetContainedBlobs(tag_id);
+        co_await blobs_future;
+        auto& blobs = blobs_future->blob_names_;
+        uint64_t next_seq = blobs.size() + 1;
+        char blob_buf[16];
+        snprintf(blob_buf, sizeof(blob_buf), "%010lu",
+                 static_cast<unsigned long>(next_seq));
+        std::string blob_name(blob_buf);
+        auto *ipc = CHI_IPC;
+        size_t payload_size = json_payload.size();
+        auto shm = ipc->AllocateBuffer(payload_size);
+        if (!shm.IsNull()) {
+          memcpy(shm.ptr_, json_payload.data(), payload_size);
+          auto put_future = WRP_CTE_CLIENT->AsyncPutBlob(
+              tag_id, blob_name, 0, payload_size, hipc::ShmPtr<>(shm.shm_));
+          co_await put_future;
+          ipc->FreeBuffer(shm);
+          pk.pack(blob_name);
+        } else {
+          pk.pack("");
+        }
+      } catch (...) {
+        pk.pack("");
+      }
+    } else {
+      pk.pack("");
+    }
+    task->results_[container_id_] = std::string(sbuf.data(), sbuf.size());
+    task->SetReturnCode(0);
+    co_return;
+  }
+
+  if (query_str.rfind("query_lg_checkpoints://", 0) == 0) {
+    std::string tag_name = query_str.substr(23);
+    msgpack::sbuffer sbuf;
+    msgpack::packer<msgpack::sbuffer> pk(sbuf);
+    try {
+      auto tag_future = WRP_CTE_CLIENT->AsyncGetOrCreateTag(tag_name);
+      co_await tag_future;
+      auto tag_id = tag_future->tag_id_;
+      auto blobs_future = WRP_CTE_CLIENT->AsyncGetContainedBlobs(tag_id);
+      co_await blobs_future;
+      auto& blobs = blobs_future->blob_names_;
+      auto *ipc = CHI_IPC;
+      pk.pack_array(static_cast<uint32_t>(blobs.size()));
+      for (const auto& bname : blobs) {
+        auto size_future = WRP_CTE_CLIENT->AsyncGetBlobSize(tag_id, bname);
+        co_await size_future;
+        auto size = size_future->size_;
+        if (size == 0) {
+          pk.pack_array(2); pk.pack(bname); pk.pack("");
+          continue;
+        }
+        auto shm = ipc->AllocateBuffer(size);
+        if (shm.IsNull()) {
+          pk.pack_array(2); pk.pack(bname); pk.pack("");
+          continue;
+        }
+        auto get_future = WRP_CTE_CLIENT->AsyncGetBlob(
+            tag_id, bname, 0, size, 0, hipc::ShmPtr<>(shm.shm_));
+        co_await get_future;
+        std::string json_str(reinterpret_cast<char*>(shm.ptr_), size);
+        pk.pack_array(2); pk.pack(bname); pk.pack(json_str);
+        ipc->FreeBuffer(shm);
+      }
+    } catch (...) {
+      pk.pack_array(0);
     }
     task->results_[container_id_] = std::string(sbuf.data(), sbuf.size());
     task->SetReturnCode(0);

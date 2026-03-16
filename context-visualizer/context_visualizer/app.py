@@ -18,6 +18,7 @@ def create_app():
     from .api.topology import bp as topology_bp
     from .api.node import bp as node_bp
     from .api.provenance import bp as provenance_bp
+    from .api.recovery import bp as recovery_bp
     from .api.llm_dispatch import bp as llm_dispatch_bp
 
     app.register_blueprint(workers_bp, url_prefix="/api")
@@ -27,6 +28,7 @@ def create_app():
     app.register_blueprint(topology_bp, url_prefix="/api")
     app.register_blueprint(node_bp, url_prefix="/api")
     app.register_blueprint(provenance_bp, url_prefix="/api")
+    app.register_blueprint(recovery_bp, url_prefix="/api")
     # LLM dispatch bridge — handles /_session/<id>/... and catch-all
     # Must be registered LAST (catch-all routes)
     app.register_blueprint(llm_dispatch_bp)
@@ -51,6 +53,10 @@ def create_app():
     @app.route("/provenance")
     def provenance():
         return render_template("provenance.html")
+
+    @app.route("/recovery")
+    def recovery():
+        return render_template("recovery.html")
 
     # Clean shutdown
     atexit.register(chimaera_client.finalize)

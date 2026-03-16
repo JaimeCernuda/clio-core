@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% block title %}Recovery - Cross-Agent Error Recovery{% endblock %}
+{% block head %}
+<script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+<style>
+    .recovery-container { display: flex; gap: 20px; padding: 20px; height: calc(100vh - 80px); }
+    .session-panel { width: 260px; flex-shrink: 0; overflow-y: auto; }
+    .main-panel { flex: 1; display: flex; flex-direction: column; gap: 15px; overflow-y: auto; }
+    .session-list { list-style: none; padding: 0; margin: 0; }
+    .session-item { padding: 10px 12px; border: 1px solid #333; border-radius: 6px; margin-bottom: 6px; cursor: pointer; background: #1a1a2e; transition: background 0.2s; display: flex; justify-content: space-between; align-items: center; }
+    .session-item:hover { background: #16213e; }
+    .session-item.active { background: #0f3460; border-color: #e94560; }
+    .session-info { flex: 1; min-width: 0; }
+    .session-id { font-weight: bold; font-size: 0.85em; color: #eee; word-break: break-all; }
+    .session-count { font-size: 0.78em; color: #888; margin-top: 3px; }
+    .badge-group { display: flex; gap: 4px; flex-shrink: 0; margin-left: 8px; }
+    .evt-badge { padding: 1px 6px; border-radius: 10px; font-size: 0.72em; font-weight: bold; }
+    .badge-error { background: #7f1d1d; color: #fca5a5; }
+    .badge-checkpoint { background: #1e3a5f; color: #93c5fd; }
+    .badge-fix { background: #14532d; color: #86efac; }
+    .badge-info { background: #3b3b00; color: #fde68a; }
+    .chart-box { background: #1a1a2e; border-radius: 8px; padding: 10px; }
+    .sankey-box { min-height: 320px; }
+    .timeline-box { min-height: 200px; }
+    .event-table { width: 100%; border-collapse: collapse; font-size: 0.83em; }
+    .event-table th { color: #666; text-align: left; padding: 6px 10px; border-bottom: 1px solid #2a2a3e; }
+    .event-table td { color: #ccc; padding: 6px 10px; border-bottom: 1px solid #1a1a2e; vertical-align: top; }
+    .event-table tr:last-child td { border-bottom: none; }
+    .event-table td.acked { color: #555; }
+    .ack-btn { padding: 2px 10px; font-size: 0.78em; border: 1px solid #444; border-radius: 4px; background: transparent; color: #aaa; cursor: pointer; }
+    .ack-btn:hover { border-color: #86efac; color: #86efac; }
+    .chk-link { color: #60a5fa; text-decoration: none; font-size: 0.78em; }
+    .chk-link:hover { text-decoration: underline; }
+    h3 { margin: 0 0 10px 0; color: #eee; font-size: 1em; }
+    .no-data { color: #666; text-align: center; padding: 30px; font-style: italic; }
+    .live-indicator { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #4caf50; margin-right: 6px; animation: pulse 2s infinite; }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+    .section-header { color: #aaa; font-size: 0.8em; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 6px; }
+    .panel-title { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="recovery-container">
+    <div class="session-panel">
+        <h3><span class="live-indicator"></span>Sessions</h3>
+        <ul class="session-list" id="session-list">
+            <li class="no-data">Loading...</li>
+        </ul>
+    </div>
+    <div class="main-panel">
+        <div class="chart-box sankey-box" id="sankey-box">
+            <div class="panel-title">
+                <h3>Cross-Agent Recovery Graph</h3>
+            </div>
+            <div id="sankey-chart" style="min-height:260px;">
+                <div class="no-data">Loading graph...</div>
+            </div>
+        </div>
+        <div class="chart-box timeline-box" id="timeline-box">
+            <h3>Event Timeline — <span id="timeline-session" style="color:#888;">no session selected</span></h3>
+            <div id="timeline-chart" style="min-height:160px;">
+                <div class="no-data">Select a session to view events</div>
+            </div>
+        </div>
+        <div class="chart-box" id="events-box">
+            <h3>Events</h3>
+            <div id="event-table-wrap">
+                <div class="no-data">Select a session</div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/recovery.js') }}"></script>
+{% endblock %}
