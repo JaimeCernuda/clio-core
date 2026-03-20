@@ -58,6 +58,10 @@ def create_app():
     def recovery():
         return render_template("recovery.html")
 
+    @app.route("/call-graph")
+    def call_graph():
+        return render_template("call_graph.html")
+
     # Clean shutdown
     atexit.register(chimaera_client.finalize)
 

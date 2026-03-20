@@ -7,6 +7,12 @@ from flask import Blueprint, Response, jsonify, request
 
 from .. import chimaera_client
 from ..analysis.context_graph import compute_analysis
+from ..analysis.call_graph import (
+    compute_call_graph,
+    compute_tool_sequence,
+    compute_workflow_graph,
+    compute_workflow_sequence,
+)
 
 bp = Blueprint("provenance", __name__)
 
@@ -180,3 +186,91 @@ def get_session_analysis(session_id):
         all_nodes.extend(_flatten_and_parse(raw_n))
 
     return jsonify(compute_analysis(all_interactions, all_nodes))
+
+
+def _fetch_child_sessions(parent_id: str) -> list[dict]:
+    """Fetch interactions and context nodes for all child sessions of parent_id.
+
+    Returns a list of {session_id, interactions, context_nodes, is_subagent} dicts.
+    Child sessions are identified by the naming convention parent_id.N (dot notation).
+    """
+    try:
+        raw_sessions = chimaera_client.get_sessions()
+        all_sessions = _flatten_results(raw_sessions) or []
+        if not isinstance(all_sessions, list):
+            all_sessions = []
+    except Exception:
+        return []
+
+    prefix = parent_id + "."
+    child_ids = [
+        s.get("session_id") for s in all_sessions
+        if isinstance(s, dict) and s.get("session_id", "").startswith(prefix)
+    ]
+
+    child_data = []
+    for cid in child_ids:
+        try:
+            raw_i = chimaera_client.get_session_interactions(cid)
+            raw_n = chimaera_client.get_context_graph(cid)
+            child_data.append({
+                "session_id": cid,
+                "interactions": _flatten_and_parse(raw_i),
+                "context_nodes": _flatten_and_parse(raw_n),
+                "is_subagent": True,
+            })
+        except Exception:
+            pass
+    return child_data
+
+
+@bp.route("/session/<session_id>/call-graph")
+def get_call_graph(session_id):
+    """Compute call-graph topology for a session.
+
+    Optional query param:
+      scope=workflow  — include all child (subagent) sessions in the graph
+    """
+    try:
+        raw_i = chimaera_client.get_session_interactions(session_id)
+        raw_n = chimaera_client.get_context_graph(session_id)
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 503
+
+    interactions = _flatten_and_parse(raw_i)
+    nodes = _flatten_and_parse(raw_n)
+
+    scope = request.args.get("scope", "session")
+    if scope == "workflow":
+        sessions = [
+            {"session_id": session_id, "interactions": interactions, "context_nodes": nodes, "is_subagent": False},
+        ] + _fetch_child_sessions(session_id)
+        return jsonify(compute_workflow_graph(sessions))
+
+    return jsonify(compute_call_graph(interactions, nodes))
+
+
+@bp.route("/session/<session_id>/tool-sequence")
+def get_tool_sequence(session_id):
+    """Compute sequential tool-call view for a session.
+
+    Optional query param:
+      scope=workflow  — include all child (subagent) sessions, interleaved by timestamp
+    """
+    try:
+        raw_i = chimaera_client.get_session_interactions(session_id)
+        raw_n = chimaera_client.get_context_graph(session_id)
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 503
+
+    interactions = _flatten_and_parse(raw_i)
+    nodes = _flatten_and_parse(raw_n)
+
+    scope = request.args.get("scope", "session")
+    if scope == "workflow":
+        sessions = [
+            {"session_id": session_id, "interactions": interactions, "context_nodes": nodes, "is_subagent": False},
+        ] + _fetch_child_sessions(session_id)
+        return jsonify({"steps": compute_workflow_sequence(sessions)})
+
+    return jsonify({"steps": compute_tool_sequence(interactions, nodes, session_id=session_id)})
