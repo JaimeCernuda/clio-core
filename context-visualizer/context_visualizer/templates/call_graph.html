@@ -45,7 +45,9 @@
     .cg-detail-section { margin-top: 8px; }
     .cg-detail-section .cg-detail-label { margin-bottom: 4px; }
     .cg-detail-error { font-size: 0.78em; color: #f87171; font-family: monospace; background: #030712; border-radius: 4px; padding: 8px; border: 1px solid #450a0a; white-space: pre-wrap; word-break: break-word; max-height: 120px; overflow-y: auto; margin: 0; }
-    .cg-detail-system { font-size: 0.78em; color: #d8b4fe; font-family: monospace; background: #030712; border-radius: 4px; padding: 8px; border: 1px solid #1f2937; white-space: pre-wrap; word-break: break-word; max-height: 110px; overflow-y: auto; margin: 0; }
+    .cg-detail-system { font-size: 0.78em; color: #d8b4fe; font-family: monospace; background: #030712; border-radius: 4px; padding: 8px; border: 1px solid #1f2937; white-space: pre-wrap; word-break: break-word; max-height: 110px; overflow-y: auto; margin: 0; transition: max-height 0.2s ease; }
+    .cg-sys-expand-btn { font-size: 0.8em; padding: 1px 7px; border: 1px solid #374151; border-radius: 3px; background: transparent; color: #9ca3af; cursor: pointer; }
+    .cg-sys-expand-btn:hover { color: #d1d5db; border-color: #6b7280; }
     .cg-detail-response { font-size: 0.78em; color: #5eead4; font-family: monospace; background: #030712; border-radius: 4px; padding: 8px; border: 1px solid #1f2937; white-space: pre-wrap; word-break: break-word; max-height: 130px; overflow-y: auto; margin: 0; }
     .cg-tool-call { font-size: 0.78em; font-family: monospace; background: rgba(194,65,12,0.15); border: 1px solid rgba(194,65,12,0.3); border-radius: 4px; padding: 4px 8px; color: #fdba74; margin-top: 3px; }
     .cg-tool-input { color: #9ca3af; }
@@ -78,6 +80,7 @@
             <button class="cg-mode-btn" id="cg-scope-workflow">Full workflow</button>
             <span class="cg-controls-sep"></span>
             <button class="cg-mode-btn" id="cg-refresh-btn" title="Re-fetch data">&#8635; Refresh</button>
+            <button class="cg-mode-btn" id="cg-export-png-btn" title="Export graph as PNG">&#8681; PNG</button>
             <span id="cg-updated-label" style="font-size:0.75em; color:#555;"></span>
             <span id="cg-session-label"></span>
         </div>

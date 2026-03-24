@@ -466,42 +466,24 @@ def ack_recovery_event(session_id: str, blob_name: str) -> None:
     _monitor("local", f"pool_stats://800.0:local:ack_recovery_event://{session_id}/{blob_name}")
 
 
-def store_lg_checkpoint(tag_name: str, data_dict: dict) -> str:
-    """Store a LangGraph checkpoint blob.
-
-    Returns the blob name (monotonic counter, zero-padded 10 digits).
-    """
+def get_latest_sequence_id(session_id: str) -> int:
+    """Return the highest sequence_id stored for a session, or 0 if none."""
     import json as _json
-    payload = _json.dumps(data_dict)
-    result = _monitor("local", f"pool_stats://800.0:local:store_lg_checkpoint://{tag_name}/{payload}")
-    for _, blob_name in result.items():
-        if isinstance(blob_name, str):
-            return blob_name
-    return ""
-
-
-def query_lg_checkpoints(tag_name: str) -> list:
-    """Return all LangGraph checkpoints for a tag, sorted by blob name (ascending).
-
-    Each element is a (blob_name, checkpoint_dict) tuple.
-    """
-    import json as _json
-    result = _monitor("local", f"pool_stats://800.0:local:query_lg_checkpoints://{tag_name}")
-    pairs = []
-    for _, raw in result.items():
-        if not isinstance(raw, list):
-            continue
-        for pair in raw:
-            if not isinstance(pair, list) or len(pair) != 2:
-                continue
-            blob_name, json_str = pair[0], pair[1]
-            try:
-                data = _json.loads(json_str) if isinstance(json_str, str) else json_str
-                pairs.append((blob_name, data))
-            except Exception:
-                pass
-    pairs.sort(key=lambda p: p[0])
-    return pairs
+    result = get_session_interactions(session_id)
+    max_seq = 0
+    for _, data in result.items():
+        items = data if isinstance(data, list) else [data]
+        for item in items:
+            if isinstance(item, str):
+                try:
+                    item = _json.loads(item)
+                except Exception:
+                    continue
+            if isinstance(item, dict):
+                seq = item.get("sequence_id", 0)
+                if seq > max_seq:
+                    max_seq = seq
+    return max_seq
 
 
 def finalize():

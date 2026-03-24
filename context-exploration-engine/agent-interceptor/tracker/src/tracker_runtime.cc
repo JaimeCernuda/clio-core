@@ -6,6 +6,7 @@
 #include <cstring>
 
 #include "dt_provenance/ctx_untangler/ctx_untangler_client.h"
+#include "dt_provenance/tracker/failure_detector.h"
 
 namespace dt_provenance::tracker {
 
@@ -138,7 +139,36 @@ chi::TaskResume Runtime::StoreInteraction(
   HLOG(kDebug, "Stored interaction seq={} tag={} blob={}", seq_id, tag_name,
        blob_name);
 
-  // 7. Dispatch to Ctx Untangler for diff computation
+  // 7. Auto-generate recovery events for detected failures (best-effort)
+  {
+    auto failure_events = FailureDetector::Detect(interaction);
+    for (auto& event : failure_events) {
+      std::string recovery_tag = "Recovery_" + session_id;
+      std::string event_id = event.value("event_id", "");
+      std::string event_data = event.dump();
+      try {
+        auto rtag_future = WRP_CTE_CLIENT->AsyncGetOrCreateTag(recovery_tag);
+        co_await rtag_future;
+        auto rtag_id = rtag_future->tag_id_;
+
+        auto *ipc = CHI_IPC;
+        auto shm = ipc->AllocateBuffer(event_data.size());
+        if (!shm.IsNull()) {
+          memcpy(shm.ptr_, event_data.c_str(), event_data.size());
+          auto put_future = WRP_CTE_CLIENT->AsyncPutBlob(
+              rtag_id, event_id, 0, event_data.size(), hipc::ShmPtr<>(shm.shm_));
+          co_await put_future;
+          ipc->FreeBuffer(shm);
+          HLOG(kInfo, "Auto recovery event: session={} type={} event_id={}",
+               session_id, event["payload"].value("error_type", ""), event_id);
+        }
+      } catch (const std::exception& e) {
+        HLOG(kWarning, "Failed to store auto recovery event: {}", e.what());
+      }
+    }
+  }
+
+  // 9. Dispatch to Ctx Untangler for diff computation
   if (!untangler_initialized_) {
     chi::PoolId pool = CHI_POOL_MANAGER->FindPoolByName("dt_ctx_untangler_pool");
     if (!pool.IsNull()) {

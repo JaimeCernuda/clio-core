@@ -550,8 +550,12 @@
         `</div>`;
 
       if (step.systemPromptPreview) {
-        bodyHtml += `<div class="cg-detail-section"><div class="cg-detail-label">System prompt (preview)</div>` +
-          `<pre class="cg-detail-system">${esc(step.systemPromptPreview)}</pre></div>`;
+        bodyHtml += `<div class="cg-detail-section">` +
+          `<div class="cg-detail-label" style="display:flex;align-items:center;gap:8px;">` +
+          `System prompt (preview)` +
+          `<button class="cg-sys-expand-btn" id="cg-sys-expand">expand</button>` +
+          `</div>` +
+          `<pre class="cg-detail-system" id="cg-sys-preview">${esc(step.systemPromptPreview)}</pre></div>`;
       }
 
       if (step.toolResults.length > 0) {
@@ -587,6 +591,48 @@
       panel.innerHTML = "";
       renderCallGraph();
     });
+
+    document.getElementById("cg-sys-expand")?.addEventListener("click", function () {
+      const pre = document.getElementById("cg-sys-preview");
+      if (!pre) return;
+      const expanded = pre.style.maxHeight === "none";
+      pre.style.maxHeight = expanded ? "110px" : "none";
+      pre.style.overflowY = expanded ? "auto" : "visible";
+      this.textContent = expanded ? "expand" : "collapse";
+    });
+  }
+
+  // ── PNG export ────────────────────────────────────────────────────────────
+
+  function exportPNG() {
+    const svg = document.getElementById("cg-svg");
+    if (!svg) return;
+    const svgData = new XMLSerializer().serializeToString(svg);
+    const svgBlob = new Blob([svgData], { type: "image/svg+xml;charset=utf-8" });
+    const url = URL.createObjectURL(svgBlob);
+    const img = new Image();
+    img.onload = function () {
+      const scale = 2;
+      const canvas = document.createElement("canvas");
+      canvas.width = img.width * scale;
+      canvas.height = img.height * scale;
+      const ctx = canvas.getContext("2d");
+      ctx.scale(scale, scale);
+      ctx.fillStyle = "#0d1117";
+      ctx.fillRect(0, 0, img.width, img.height);
+      ctx.drawImage(img, 0, 0);
+      URL.revokeObjectURL(url);
+      canvas.toBlob(blob => {
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        const sessionPart = currentSession ? `_${currentSession.slice(0, 16)}` : "";
+        const modePart = viewMode === "sequential" ? "_seq" : "_agg";
+        a.download = `call_graph${sessionPart}${modePart}.png`;
+        a.click();
+        URL.revokeObjectURL(a.href);
+      }, "image/png");
+    };
+    img.src = url;
   }
 
   // ── Data loading ──────────────────────────────────────────────────────────
@@ -747,6 +793,9 @@
   if (refreshBtn) refreshBtn.addEventListener("click", () => {
     if (currentSession) loadCallGraph(currentSession, false);
   });
+
+  const exportPngBtn = document.getElementById("cg-export-png-btn");
+  if (exportPngBtn) exportPngBtn.addEventListener("click", exportPNG);
 
   loadSessions();
   setInterval(loadSessions, 5000);

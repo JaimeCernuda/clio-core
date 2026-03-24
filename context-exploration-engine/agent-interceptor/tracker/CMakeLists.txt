@@ -40,6 +40,7 @@ add_chimod_client(
 add_chimod_runtime(
   SOURCES
     src/tracker_runtime.cc
+    src/failure_detector.cc
     src/autogen/dt_tracker_lib_exec.cc
   LINK_LIBRARIES
     chimaera_admin_runtime

@@ -4,10 +4,12 @@ Translates agent HTTP requests into pool_stats://800.0:local:<json> Monitor
 queries that land in the proxy ChiMod's Monitor handler on a Chimaera worker.
 """
 
+import concurrent.futures as _futures
 import hashlib
 import json
 import re
 import threading
+import time
 import uuid
 from datetime import datetime
 
@@ -22,6 +24,9 @@ _session_conv_map: dict = {}
 # Maps session_id → next sub-session counter (starts at 2)
 _session_counter: dict = {}
 _session_lock = threading.Lock()
+
+# Thread pool for background checkpoint work
+_checkpoint_executor = _futures.ThreadPoolExecutor(max_workers=2, thread_name_prefix="dtp-ckpt")
 
 
 def _conversation_fingerprint(body_text: str) -> str:
@@ -77,39 +82,83 @@ def _resolve_session(session_id: str, body_text: str) -> str:
         conv_map[fp] = resolved
         return resolved
 
+
+def _extract_token_count(response_body: str, provider: str) -> int:
+    """Extract token count from LLM response body."""
+    try:
+        body = json.loads(response_body)
+    except Exception:
+        return 0
+    if provider == "anthropic":
+        usage = body.get("usage", {})
+        return usage.get("input_tokens", 0) + usage.get("output_tokens", 0)
+    usage = body.get("usage", {})
+    return usage.get("total_tokens", 0) or (
+        usage.get("prompt_tokens", 0) + usage.get("completion_tokens", 0)
+    )
+
+
+def _auto_checkpoint(session_id: str, response_body: str, provider: str, latency_ms: float):
+    """Run in background: detect natural breakpoint and create checkpoint."""
+    try:
+        from ..checkpointing.checkpoint_manager import manager
+        from .. import chimaera_client as _cc
+        import time as _time
+        _time.sleep(0.15)  # let tracker finish writing
+        seq_id = _cc.get_latest_sequence_id(session_id)
+        if seq_id > 0:
+            token_count = _extract_token_count(response_body, provider)
+            manager.detect_and_create(session_id, seq_id, response_body, provider, token_count, latency_ms)
+    except Exception:
+        pass
+
+
 def _inject_recovery_context(session_id: str, body_text: str, provider: str) -> str:
-    """Inject pending recovery signals into the system prompt.
+    """Inject pending recovery signals and replay context into the system prompt.
 
     Returns the (possibly modified) body JSON string.
     Skips injection silently on any error or timeout.
     """
+    from ..checkpointing.checkpoint_manager import manager
+
+    # Check for pending replay first
+    replay = manager.consume_replay(session_id)
+    preambles = []
+
+    if replay is not None:
+        preambles.append(manager.build_replay_injection(replay))
+
+    # Then check for recovery events
     try:
         events = chimaera_client.get_recovery_events(session_id)
     except Exception:
-        return body_text
+        events = []
 
     pending = [e for e in events if not e.get("acknowledged", False)]
-    if not pending:
+    if pending:
+        lines = [
+            "[DTProvenance Recovery Context]",
+            f"Your session ID: {session_id}",
+            "Pending errors reported about your output:",
+        ]
+        for ev in pending:
+            payload = ev.get("payload", {})
+            src = ev.get("source_session_id", "?")
+            seq = ev.get("source_sequence_id", "?")
+            desc = payload.get("description", ev.get("event_type", ""))
+            lines.append(f"- [{ev.get('event_type', 'event')} from {src} @ seq {seq}]: {desc}")
+
+        lines += [
+            "",
+            "To propagate an error to another agent, include in your response:",
+            '<recovery_signal>{"type":"error_report","target_session":"<sid>","error_type":"code_error|incorrect_information|logical_error|tool_failure","description":"<description>"}</recovery_signal>',
+        ]
+        preambles.append("\n".join(lines))
+
+    if not preambles:
         return body_text
 
-    lines = [
-        "[DTProvenance Recovery Context]",
-        f"Your session ID: {session_id}",
-        "Pending errors reported about your output:",
-    ]
-    for ev in pending:
-        payload = ev.get("payload", {})
-        src = ev.get("source_session_id", "?")
-        seq = ev.get("source_sequence_id", "?")
-        desc = payload.get("description", ev.get("event_type", ""))
-        lines.append(f"- [{ev.get('event_type', 'event')} from {src} @ seq {seq}]: {desc}")
-
-    lines += [
-        "",
-        "To propagate an error to another agent, include in your response:",
-        '<recovery_signal>{"type":"error_report","target_session":"<sid>","error_type":"code_error|incorrect_information|logical_error|tool_failure","description":"<description>"}</recovery_signal>',
-    ]
-    preamble = "\n".join(lines)
+    preamble = "\n\n".join(preambles)
 
     try:
         body = json.loads(body_text)
@@ -119,8 +168,11 @@ def _inject_recovery_context(session_id: str, body_text: str, provider: str) -> 
     if provider == "anthropic":
         system = body.get("system", "")
         if isinstance(system, list):
-            # Prepend as first text block
-            body["system"] = [{"type": "text", "text": preamble}] + system
+            # Append as final text block.  Anthropic requires blocks with
+            # cache_control to precede uncached blocks; prepending an uncached
+            # preamble block before a cached original block violates that rule
+            # and causes a 400 invalid_request_error.
+            body["system"] = system + [{"type": "text", "text": preamble}]
         else:
             body["system"] = preamble + ("\n\n" + system if system else "")
     elif provider in ("openai", "ollama"):
@@ -292,6 +344,9 @@ def forward_request(session_id, subpath):
     # logical agent identity are injected into all its sub-conversations.
     body_text = _inject_recovery_context(session_id, body_text, provider)
 
+    # Record start time for latency measurement
+    start_time = time.monotonic()
+
     # Submit to proxy ChiMod via pool_stats:// Monitor query
     try:
         result = chimaera_client.forward_llm_request(
@@ -352,6 +407,10 @@ def forward_request(session_id, subpath):
                 chimaera_client.store_recovery_event(sig)
             except Exception:
                 pass
+
+        # Submit background checkpoint detection
+        latency_ms = (time.monotonic() - start_time) * 1000
+        _checkpoint_executor.submit(_auto_checkpoint, actual_session_id, body, provider, latency_ms)
 
     return Response(body, status=status, content_type=content_type)
 
