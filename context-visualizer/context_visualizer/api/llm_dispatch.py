@@ -113,6 +113,97 @@ def _auto_checkpoint(session_id: str, response_body: str, provider: str, latency
         pass
 
 
+def _run_semantic_checks(session_id: str, request_body: str, response_body: str, provider: str):
+    """Run in background: execute per_query semantic checks and emit recovery events.
+
+    Skips silently if no checks are configured or the Anthropic client is unavailable.
+    For every check that fails with severity='error' a recovery event is stored in CTE
+    so that the agent is notified on its next request.
+    """
+    try:
+        from ..semantic.checker import get_checker
+        from .. import chimaera_client as _cc
+        import time as _time
+
+        checker = get_checker()
+        if not checker._config.checks:
+            return
+
+        # Give the tracker a moment to record the interaction before we fetch seq_id
+        _time.sleep(0.20)
+        seq_id = _cc.get_latest_sequence_id(session_id)
+
+        # Extract text from request and response bodies
+        request_text = _messages_text(request_body)
+        response_text = _response_text(response_body, provider)
+
+        batch = checker.run_checks(
+            session_id, seq_id, request_text, response_text, trigger="per_query"
+        )
+
+        for failure in batch.error_failures:
+            event = {
+                "event_id": str(uuid.uuid4()),
+                "event_type": "semantic_check_failure",
+                "source_session_id": session_id,
+                "source_sequence_id": seq_id,
+                "target_session_id": session_id,
+                "timestamp": datetime.utcnow().isoformat() + "Z",
+                "acknowledged": False,
+                "payload": {
+                    "error_type": "semantic_check",
+                    "check_name": failure.check_name,
+                    "description": failure.explanation,
+                    "confidence": failure.confidence,
+                    "error_introduced_at_sequence": failure.error_introduced_at_sequence,
+                },
+            }
+            try:
+                _cc.store_recovery_event(event)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
+def _messages_text(body_text: str) -> str:
+    """Extract the last few messages from a request body as plain text."""
+    try:
+        body = json.loads(body_text)
+        messages = body.get("messages", [])
+        parts = []
+        for msg in messages[-3:]:
+            role = msg.get("role", "")
+            content = msg.get("content", "")
+            if isinstance(content, list):
+                content = " ".join(
+                    b.get("text", "") for b in content
+                    if isinstance(b, dict) and b.get("type") == "text"
+                )
+            parts.append(f"{role}: {content}")
+        return "\n".join(parts)
+    except Exception:
+        return ""
+
+
+def _response_text(body_text: str, provider: str) -> str:
+    """Extract the assistant's text from a response body."""
+    try:
+        body = json.loads(body_text)
+        if provider == "anthropic":
+            for block in body.get("content", []):
+                if isinstance(block, dict) and block.get("type") == "text":
+                    return block.get("text", "")
+        else:
+            choices = body.get("choices", [])
+            if choices:
+                msg = choices[0].get("message", {})
+                return msg.get("content", "")
+    except Exception:
+        pass
+    return ""
+
+
 def _inject_recovery_context(session_id: str, body_text: str, provider: str) -> str:
     """Inject pending recovery signals and replay context into the system prompt.
 
@@ -337,6 +428,7 @@ def forward_request(session_id, subpath):
 
     # Resolve session ID (splits subagent conversations into child sessions)
     body_text = request.get_data(as_text=True)
+    original_body_text = body_text  # preserve pre-injection copy for semantic checks
     actual_session_id = _resolve_session(session_id, body_text)
 
     # Inject pending recovery signals into system prompt.
@@ -411,6 +503,11 @@ def forward_request(session_id, subpath):
         # Submit background checkpoint detection
         latency_ms = (time.monotonic() - start_time) * 1000
         _checkpoint_executor.submit(_auto_checkpoint, actual_session_id, body, provider, latency_ms)
+
+        # Submit background semantic checks (no-op if no config or no API key)
+        _checkpoint_executor.submit(
+            _run_semantic_checks, actual_session_id, original_body_text, body, provider
+        )
 
     return Response(body, status=status, content_type=content_type)
 

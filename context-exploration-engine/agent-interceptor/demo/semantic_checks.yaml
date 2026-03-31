@@ -1,0 +1,83 @@
+# Semantic checks configuration for DTProvenance
+#
+# Place this file at one of:
+#   - Path set in DTP_SEMANTIC_CHECKS environment variable
+#   - ./semantic_checks.yaml  (working directory when the server starts)
+#   - ~/.dt_provenance/semantic_checks.yaml  (user default)
+#
+# After editing, reload without restarting the server:
+#   POST http://localhost:9090/api/semantic-checks/reload
+#
+# Check triggers:
+#   per_query      — run after every successful response
+#   on_strict_error — run only when a strict (HTTP/stream) error was already detected
+#
+# Check severity:
+#   error   — failure creates a recovery event; the agent is notified on its next request
+#   warning — failure is recorded in check results but does not trigger recovery
+#
+# Model used for evaluation (default: claude-haiku-4-5-20251001 — fast and cheap):
+model: claude-haiku-4-5-20251001
+max_tokens: 512
+
+checks:
+  # -----------------------------------------------------------------
+  # Code quality checks
+  # -----------------------------------------------------------------
+  - name: no_memory_leaks
+    description: >
+      Any code produced in the response should not introduce memory leaks.
+      Check for heap allocations without matching frees, unclosed file handles,
+      or resource acquisitions without corresponding releases.
+    trigger: per_query
+    severity: error
+    enabled: false  # enable when working on C/C++ code generation tasks
+
+  - name: no_undefined_behavior
+    description: >
+      Any code produced in the response must not contain undefined behavior
+      such as signed integer overflow, out-of-bounds array access, null pointer
+      dereference, or use-after-free.
+    trigger: per_query
+    severity: error
+    enabled: false
+
+  - name: thread_safety
+    description: >
+      Shared mutable state accessed from multiple threads must be protected by
+      appropriate synchronization primitives (mutex, atomic, etc.).
+    trigger: per_query
+    severity: warning
+    enabled: false
+
+  # -----------------------------------------------------------------
+  # Factual consistency checks
+  # -----------------------------------------------------------------
+  - name: consistent_with_prior_context
+    description: >
+      The response must not contradict or silently ignore facts, variable names,
+      or decisions that were established earlier in the conversation.
+    trigger: per_query
+    severity: warning
+    enabled: true
+
+  - name: no_hallucinated_apis
+    description: >
+      Any library functions, class methods, or API endpoints mentioned in the
+      response must actually exist.  The response must not invent plausible-sounding
+      but non-existent function names or parameters.
+    trigger: per_query
+    severity: error
+    enabled: false
+
+  # -----------------------------------------------------------------
+  # Task completion checks
+  # -----------------------------------------------------------------
+  - name: addresses_user_request
+    description: >
+      The response must directly address the user's most recent request.
+      It must not deflect, ask a clarifying question without also attempting the task,
+      or answer a different question than the one asked.
+    trigger: per_query
+    severity: warning
+    enabled: false

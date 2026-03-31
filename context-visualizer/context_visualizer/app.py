@@ -21,6 +21,7 @@ def create_app():
     from .api.recovery import bp as recovery_bp
     from .api.checkpoints import bp as checkpoints_bp
     from .api.llm_dispatch import bp as llm_dispatch_bp
+    from .api.semantic import bp as semantic_bp
 
     app.register_blueprint(workers_bp, url_prefix="/api")
     app.register_blueprint(pools_bp, url_prefix="/api")
@@ -31,6 +32,7 @@ def create_app():
     app.register_blueprint(provenance_bp, url_prefix="/api")
     app.register_blueprint(recovery_bp, url_prefix="/api")
     app.register_blueprint(checkpoints_bp, url_prefix="/api")
+    app.register_blueprint(semantic_bp, url_prefix="/api")
     # LLM dispatch bridge — handles /_session/<id>/... and catch-all
     # Must be registered LAST (catch-all routes)
     app.register_blueprint(llm_dispatch_bp)

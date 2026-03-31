@@ -84,11 +84,11 @@ def _extract_system_prompt(request_body: dict, provider: str) -> str | None:
         system = request_body.get("system", "")
         if isinstance(system, list):
             system = " ".join(b.get("text", "") for b in system if isinstance(b, dict))
-        return str(system)[:200] if system else None
+        return str(system) if system else None
     for msg in request_body.get("messages", []):
         if msg.get("role") == "system":
             content = msg.get("content", "")
-            return str(content)[:200] if content else None
+            return str(content) if content else None
     return None
 
 
