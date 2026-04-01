@@ -272,12 +272,23 @@ chi::TaskResume Runtime::Monitor(hipc::FullPtr<MonitorTask> task,
         task->results_[container_id_] =
             std::string(forward_future->response_msgpack_.str());
         std::string record_json(forward_future->record_json_.str());
-        // Store interaction via tracker
+        // Store interaction via tracker — time the full pipeline overhead
         if (!record_json.empty() && EnsureTrackerClient()) {
           try {
+            const bool logging = overhead_logging_.load(std::memory_order_relaxed);
+            auto pipeline_start = logging ? std::chrono::steady_clock::now()
+                                          : std::chrono::steady_clock::time_point{};
             auto store_future = tracker_client_->AsyncStoreInteraction(
                 chi::PoolQuery::Local(), record_json);
             co_await store_future;
+            if (logging) {
+              auto pipeline_end = std::chrono::steady_clock::now();
+              uint64_t pipeline_us = static_cast<uint64_t>(
+                  std::chrono::duration_cast<std::chrono::microseconds>(
+                      pipeline_end - pipeline_start).count());
+              total_pipeline_overhead_us_.fetch_add(pipeline_us,
+                                                     std::memory_order_relaxed);
+            }
           } catch (...) {
             HLOG(kWarning, "Tracker store failed");
           }
@@ -286,6 +297,29 @@ chi::TaskResume Runtime::Monitor(hipc::FullPtr<MonitorTask> task,
         co_return;
       }
     } catch (const json::parse_error&) {}
+  }
+
+  // 2a. Overhead logging toggle / status
+  if (query_str == "overhead_logging:on") {
+    overhead_logging_.store(true, std::memory_order_relaxed);
+    msgpack::sbuffer sbuf; msgpack::packer<msgpack::sbuffer> pk(sbuf);
+    pk.pack_map(1); pk.pack("enabled"); pk.pack(true);
+    task->results_[container_id_] = std::string(sbuf.data(), sbuf.size());
+    task->SetReturnCode(0); co_return;
+  }
+  if (query_str == "overhead_logging:off") {
+    overhead_logging_.store(false, std::memory_order_relaxed);
+    msgpack::sbuffer sbuf; msgpack::packer<msgpack::sbuffer> pk(sbuf);
+    pk.pack_map(1); pk.pack("enabled"); pk.pack(false);
+    task->results_[container_id_] = std::string(sbuf.data(), sbuf.size());
+    task->SetReturnCode(0); co_return;
+  }
+  if (query_str == "overhead_logging:status") {
+    msgpack::sbuffer sbuf; msgpack::packer<msgpack::sbuffer> pk(sbuf);
+    pk.pack_map(1); pk.pack("enabled");
+    pk.pack(overhead_logging_.load(std::memory_order_relaxed));
+    task->results_[container_id_] = std::string(sbuf.data(), sbuf.size());
+    task->SetReturnCode(0); co_return;
   }
 
   // 2. dispatch_stats — local only, no sub-dispatch
@@ -809,13 +843,34 @@ chi::TaskResume Runtime::ForwardHttp(hipc::FullPtr<ForwardHttpTask> task,
        session_id, provider_name, resp_status,
        static_cast<int>(latency_ms));
 
-  // Build interaction record for tracker storage
+  // Build interaction record for tracker storage — timed separately from LLM call
   std::string record_json;
   if (resp_status >= 200 && resp_status < 300) {
     try {
+      const bool logging = overhead_logging_.load(std::memory_order_relaxed);
+      auto record_start = logging ? std::chrono::steady_clock::now()
+                                  : std::chrono::steady_clock::time_point{};
       record_json = BuildInteractionRecord(
           session_id, provider, path, headers_str, body,
           resp_status, resp_headers, resp_body, latency_ms);
+      if (logging && !record_json.empty()) {
+        auto record_end = std::chrono::steady_clock::now();
+        double proxy_overhead_ms = std::chrono::duration<double, std::milli>(
+            record_end - record_start).count();
+        uint64_t proxy_overhead_us = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::microseconds>(
+                record_end - record_start).count());
+        total_proxy_overhead_us_.fetch_add(proxy_overhead_us,
+                                           std::memory_order_relaxed);
+        // Inject proxy_overhead_ms into the record JSON so it is persisted in CTE
+        try {
+          auto rec = json::parse(record_json);
+          if (rec.contains("metrics")) {
+            rec["metrics"]["proxy_overhead_ms"] = proxy_overhead_ms;
+          }
+          record_json = rec.dump();
+        } catch (...) {}
+      }
     } catch (...) {
       HLOG(kWarning, "Failed to build interaction record for session={}", session_id);
     }
@@ -857,14 +912,26 @@ void Runtime::HandleDispatchStats(hipc::FullPtr<MonitorTask>& task) {
   // active_sessions is reported as 0 for now — the dashboard can query
   // list_sessions separately and count.
   uint64_t active_sessions = 0;
+  uint64_t total_requests = total_requests_.load(std::memory_order_relaxed);
+  uint64_t proxy_overhead_us = total_proxy_overhead_us_.load(std::memory_order_relaxed);
+  uint64_t pipeline_overhead_us = total_pipeline_overhead_us_.load(std::memory_order_relaxed);
+
+  // Average overheads (0 if no requests yet)
+  double avg_proxy_overhead_ms = total_requests > 0
+      ? static_cast<double>(proxy_overhead_us) / total_requests / 1000.0 : 0.0;
+  double avg_pipeline_overhead_ms = total_requests > 0
+      ? static_cast<double>(pipeline_overhead_us) / total_requests / 1000.0 : 0.0;
 
   msgpack::sbuffer sbuf;
   msgpack::packer<msgpack::sbuffer> pk(sbuf);
-  pk.pack_map(3);
-  pk.pack("total_requests");
-  pk.pack(total_requests_.load(std::memory_order_relaxed));
+  pk.pack_map(7);
+  pk.pack("total_requests"); pk.pack(total_requests);
   pk.pack("active_sessions"); pk.pack(active_sessions);
   pk.pack("uptime_seconds"); pk.pack(static_cast<uint64_t>(uptime_s));
+  pk.pack("total_proxy_overhead_us"); pk.pack(proxy_overhead_us);
+  pk.pack("total_pipeline_overhead_us"); pk.pack(pipeline_overhead_us);
+  pk.pack("avg_proxy_overhead_ms"); pk.pack(avg_proxy_overhead_ms);
+  pk.pack("avg_pipeline_overhead_ms"); pk.pack(avg_pipeline_overhead_ms);
   task->results_[container_id_] = std::string(sbuf.data(), sbuf.size());
 }
 

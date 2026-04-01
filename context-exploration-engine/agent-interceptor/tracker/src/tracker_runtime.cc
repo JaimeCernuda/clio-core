@@ -3,6 +3,7 @@
 #include <wrp_cte/core/core_client.h>
 #include <hermes_shm/serialize/msgpack_wrapper.h>
 #include <nlohmann/json.hpp>
+#include <chrono>
 #include <cstring>
 
 #include "dt_provenance/ctx_untangler/ctx_untangler_client.h"
@@ -83,6 +84,10 @@ chi::TaskResume Runtime::Create(hipc::FullPtr<CreateTask> task,
 
 chi::TaskResume Runtime::StoreInteraction(
     hipc::FullPtr<StoreInteractionTask> task, chi::RunContext& rctx) {
+  const bool logging = overhead_logging_.load(std::memory_order_relaxed);
+  auto store_start = logging ? std::chrono::steady_clock::now()
+                             : std::chrono::steady_clock::time_point{};
+
   // 1. Atomic increment for monotonic sequence ID
   uint64_t seq_id = sequence_counter_.fetch_add(1) + 1;
 
@@ -181,6 +186,15 @@ chi::TaskResume Runtime::StoreInteraction(
         chi::PoolQuery::Local(), session_id, seq_id);
     co_await f;
   }
+
+  if (logging) {
+    auto store_end = std::chrono::steady_clock::now();
+    uint64_t store_us = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            store_end - store_start).count());
+    total_store_us_.fetch_add(store_us, std::memory_order_relaxed);
+  }
+  interactions_stored_.fetch_add(1, std::memory_order_relaxed);
 
   task->sequence_id_ = seq_id;
   co_return;
@@ -419,6 +433,34 @@ chi::TaskResume Runtime::Monitor(hipc::FullPtr<MonitorTask> task,
 
       task->results_[container_id_] = std::string(sbuf.data(), sbuf.size());
     }
+  } else if (query == "overhead_logging:on") {
+    overhead_logging_.store(true, std::memory_order_relaxed);
+    msgpack::sbuffer sbuf; msgpack::packer<msgpack::sbuffer> pk(sbuf);
+    pk.pack_map(1); pk.pack("enabled"); pk.pack(true);
+    task->results_[container_id_] = std::string(sbuf.data(), sbuf.size());
+  } else if (query == "overhead_logging:off") {
+    overhead_logging_.store(false, std::memory_order_relaxed);
+    msgpack::sbuffer sbuf; msgpack::packer<msgpack::sbuffer> pk(sbuf);
+    pk.pack_map(1); pk.pack("enabled"); pk.pack(false);
+    task->results_[container_id_] = std::string(sbuf.data(), sbuf.size());
+  } else if (query == "overhead_logging:status") {
+    msgpack::sbuffer sbuf; msgpack::packer<msgpack::sbuffer> pk(sbuf);
+    pk.pack_map(1); pk.pack("enabled");
+    pk.pack(overhead_logging_.load(std::memory_order_relaxed));
+    task->results_[container_id_] = std::string(sbuf.data(), sbuf.size());
+  } else if (query == "overhead_stats") {
+    uint64_t count = interactions_stored_.load(std::memory_order_relaxed);
+    uint64_t total_us = total_store_us_.load(std::memory_order_relaxed);
+    double avg_ms = count > 0
+        ? static_cast<double>(total_us) / count / 1000.0 : 0.0;
+
+    msgpack::sbuffer sbuf;
+    msgpack::packer<msgpack::sbuffer> pk(sbuf);
+    pk.pack_map(3);
+    pk.pack("interactions_stored"); pk.pack(count);
+    pk.pack("total_store_us"); pk.pack(total_us);
+    pk.pack("avg_store_ms"); pk.pack(avg_ms);
+    task->results_[container_id_] = std::string(sbuf.data(), sbuf.size());
   }
 
   (void)rctx;

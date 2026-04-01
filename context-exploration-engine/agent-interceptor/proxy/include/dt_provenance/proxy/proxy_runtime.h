@@ -81,6 +81,13 @@ class Runtime : public chi::Container {
   // Dispatch stats
   std::atomic<uint64_t> total_requests_{0};
   std::chrono::steady_clock::time_point start_time_;
+
+  // Overhead stats (microseconds for precision)
+  std::atomic<uint64_t> total_proxy_overhead_us_{0};    // BuildInteractionRecord time
+  std::atomic<uint64_t> total_pipeline_overhead_us_{0}; // proxy + tracker + untangler
+
+  // Runtime toggle — when false, all overhead timing is skipped
+  std::atomic<bool> overhead_logging_{true};
 };
 
 }  // namespace dt_provenance::proxy

@@ -1,6 +1,7 @@
 #ifndef DT_PROVENANCE_CTX_UNTANGLER_RUNTIME_H_
 #define DT_PROVENANCE_CTX_UNTANGLER_RUNTIME_H_
 
+#include <atomic>
 #include <chimaera/chimaera.h>
 #include <string>
 
@@ -72,6 +73,11 @@ class Runtime : public chi::Container {
   static std::string BuildInteractionTagName(const std::string& session_id);
 
   Client client_;
+
+  // Overhead tracking
+  std::atomic<uint64_t> total_diff_us_{0};    // cumulative ComputeDiff time
+  std::atomic<uint64_t> diffs_computed_{0};
+  std::atomic<bool> overhead_logging_{true};
 };
 
 }  // namespace dt_provenance::ctx_untangler

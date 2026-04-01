@@ -22,6 +22,7 @@ def create_app():
     from .api.checkpoints import bp as checkpoints_bp
     from .api.llm_dispatch import bp as llm_dispatch_bp
     from .api.semantic import bp as semantic_bp
+    from .api.overhead import bp as overhead_bp
 
     app.register_blueprint(workers_bp, url_prefix="/api")
     app.register_blueprint(pools_bp, url_prefix="/api")
@@ -33,6 +34,7 @@ def create_app():
     app.register_blueprint(recovery_bp, url_prefix="/api")
     app.register_blueprint(checkpoints_bp, url_prefix="/api")
     app.register_blueprint(semantic_bp, url_prefix="/api")
+    app.register_blueprint(overhead_bp, url_prefix="/api")
     # LLM dispatch bridge — handles /_session/<id>/... and catch-all
     # Must be registered LAST (catch-all routes)
     app.register_blueprint(llm_dispatch_bp)
@@ -65,6 +67,10 @@ def create_app():
     @app.route("/call-graph")
     def call_graph():
         return render_template("call_graph.html")
+
+    @app.route("/overhead")
+    def overhead():
+        return render_template("overhead.html")
 
     # Clean shutdown
     atexit.register(chimaera_client.finalize)

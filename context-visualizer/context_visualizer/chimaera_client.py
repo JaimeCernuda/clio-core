@@ -486,6 +486,65 @@ def get_latest_sequence_id(session_id: str) -> int:
     return max_seq
 
 
+# ── Overhead stats and logging toggle ────────────────────────────────────────
+
+def get_proxy_dispatch_stats():
+    """Query dispatch + overhead stats from the proxy ChiMod (pool 800.0)."""
+    return _monitor("local", "pool_stats://800.0:local:dispatch_stats")
+
+
+def get_tracker_overhead_stats():
+    """Query overhead stats from the tracker ChiMod (pool 810.0)."""
+    return _monitor("local", "pool_stats://810.0:local:overhead_stats")
+
+
+def get_untangler_overhead_stats():
+    """Query overhead stats from the ctx_untangler ChiMod (pool 820.0)."""
+    return _monitor("local", "pool_stats://820.0:local:overhead_stats")
+
+
+def get_overhead_logging_status():
+    """Return {proxy, tracker, untangler} overhead_logging enabled flags."""
+    results = {}
+    for name, pool in [("proxy", "800.0"), ("tracker", "810.0"),
+                        ("untangler", "820.0")]:
+        try:
+            raw = _monitor("local",
+                           f"pool_stats://{pool}:local:overhead_logging:status")
+            for _, v in raw.items():
+                if isinstance(v, dict):
+                    results[name] = v.get("enabled", True)
+                    break
+            else:
+                results[name] = True
+        except Exception:
+            results[name] = None
+    return results
+
+
+def set_overhead_logging(enabled: bool, component: str = "all"):
+    """Toggle overhead logging on proxy/tracker/untangler.
+
+    component: "all" | "proxy" | "tracker" | "untangler"
+    """
+    cmd = "overhead_logging:on" if enabled else "overhead_logging:off"
+    targets = {
+        "proxy": "800.0",
+        "tracker": "810.0",
+        "untangler": "820.0",
+    }
+    if component != "all":
+        targets = {k: v for k, v in targets.items() if k == component}
+    for pool in targets.values():
+        try:
+            _monitor("local", f"pool_stats://{pool}:local:{cmd}")
+        except Exception:
+            pass
+
+
+# ── End overhead helpers ──────────────────────────────────────────────────────
+
+
 def finalize():
     """Clean shutdown of the Chimaera client."""
     global _init_done

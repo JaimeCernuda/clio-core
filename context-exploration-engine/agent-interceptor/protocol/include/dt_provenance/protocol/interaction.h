@@ -136,8 +136,12 @@ struct InteractionRecord {
     int64_t cache_read_tokens = 0;
     int64_t cache_creation_tokens = 0;
     double cost_usd = 0.0;
-    double total_latency_ms = 0.0;
+    double total_latency_ms = 0.0;         // LLM round-trip time (excl. CEE)
     double time_to_first_token_ms = 0.0;
+    // CEE overhead fields — time added by interception pipeline
+    double proxy_overhead_ms = 0.0;        // request parsing + record building
+    double tracker_store_ms = 0.0;         // CTE store time in tracker
+    double ctx_untangler_ms = 0.0;         // diff computation in ctx_untangler
   } metrics;
 
   // Conversation threading

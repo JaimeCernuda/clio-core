@@ -138,7 +138,10 @@ json InteractionRecord::ToJson() const {
             {"cache_creation_tokens", metrics.cache_creation_tokens},
             {"cost_usd", metrics.cost_usd},
             {"total_latency_ms", metrics.total_latency_ms},
-            {"time_to_first_token_ms", metrics.time_to_first_token_ms}}},
+            {"time_to_first_token_ms", metrics.time_to_first_token_ms},
+            {"proxy_overhead_ms", metrics.proxy_overhead_ms},
+            {"tracker_store_ms", metrics.tracker_store_ms},
+            {"ctx_untangler_ms", metrics.ctx_untangler_ms}}},
       {"conversation", conversation.ToJson()},
       {"context_metrics", context_metrics.ToJson()}};
 }
@@ -186,6 +189,9 @@ InteractionRecord InteractionRecord::FromJson(const json& j) {
     if (m.contains("cost_usd")) r.metrics.cost_usd = m["cost_usd"].get<double>();
     if (m.contains("total_latency_ms")) r.metrics.total_latency_ms = m["total_latency_ms"].get<double>();
     if (m.contains("time_to_first_token_ms")) r.metrics.time_to_first_token_ms = m["time_to_first_token_ms"].get<double>();
+    if (m.contains("proxy_overhead_ms")) r.metrics.proxy_overhead_ms = m["proxy_overhead_ms"].get<double>();
+    if (m.contains("tracker_store_ms")) r.metrics.tracker_store_ms = m["tracker_store_ms"].get<double>();
+    if (m.contains("ctx_untangler_ms")) r.metrics.ctx_untangler_ms = m["ctx_untangler_ms"].get<double>();
   }
 
   // Conversation

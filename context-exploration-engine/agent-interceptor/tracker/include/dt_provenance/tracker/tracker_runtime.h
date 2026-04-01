@@ -88,6 +88,11 @@ class Runtime : public chi::Container {
   std::atomic<uint64_t> sequence_counter_{0};
   ConversationThreader threader_;
 
+  // Overhead tracking
+  std::atomic<uint64_t> total_store_us_{0};     // cumulative StoreInteraction time
+  std::atomic<uint64_t> interactions_stored_{0};
+  std::atomic<bool> overhead_logging_{true};
+
   // Ctx Untangler lazy-init (dispatches ComputeDiff after storing)
   std::unique_ptr<dt_provenance::ctx_untangler::Client> untangler_client_;
   bool untangler_initialized_ = false;
