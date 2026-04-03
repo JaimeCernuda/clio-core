@@ -34,6 +34,7 @@
 #ifndef WRP_CEE_API_CONTEXT_INTERFACE_H_
 #define WRP_CEE_API_CONTEXT_INTERFACE_H_
 
+#include <cstdint>
 #include <string>
 #include <vector>
 #include <wrp_cae/core/factory/assimilation_ctx.h>
@@ -131,6 +132,20 @@ public:
    * @return 0 on success, non-zero error code on failure
    */
   int ContextDestroy(const std::vector<std::string> &context_names);
+
+  /**
+   * Rewind a session to a target interaction sequence
+   *
+   * Deletes all interaction records and context graph nodes stored after
+   * target_seq_id for the given session. Both the Agentic_session_{session_id}
+   * tag and the Ctx_graph_{session_id} tag are pruned. This allows the CEE to
+   * roll back an agent session to a known-good checkpoint.
+   *
+   * @param session_id The session to rewind
+   * @param target_seq_id Interactions with sequence_id > target_seq_id are removed
+   * @return Number of interaction records deleted on success, -1 on error
+   */
+  int ContextRewind(const std::string &session_id, uint64_t target_seq_id);
 
 private:
   /**

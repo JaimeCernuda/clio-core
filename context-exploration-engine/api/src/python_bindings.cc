@@ -127,5 +127,16 @@ NB_MODULE(wrp_cee, m) {
          "Parameters:\n"
          "  context_names: List of context names to destroy\n\n"
          "Returns:\n"
-         "  0 on success, non-zero error code on failure");
+         "  0 on success, non-zero error code on failure")
+    .def("context_rewind", &iowarp::ContextInterface::ContextRewind,
+         nb::arg("session_id"), nb::arg("target_seq_id"),
+         "Rewind a session to a target interaction sequence\n\n"
+         "Deletes all interaction records and context graph nodes stored after\n"
+         "target_seq_id for the given session. Both Agentic_session_{session_id}\n"
+         "and Ctx_graph_{session_id} tags are pruned.\n\n"
+         "Parameters:\n"
+         "  session_id: The session to rewind\n"
+         "  target_seq_id: Interactions with sequence_id > target_seq_id are removed\n\n"
+         "Returns:\n"
+         "  Number of records deleted on success, -1 on error");
 }

@@ -374,4 +374,57 @@ int ContextInterface::ContextDestroy(
   }
 }
 
+int ContextInterface::ContextRewind(const std::string &session_id,
+                                    uint64_t target_seq_id) {
+  if (!EnsureInitialized()) {
+    HLOG(kError, "ContextInterface failed to initialize");
+    return -1;
+  }
+
+  try {
+    auto* cte_client = WRP_CTE_CLIENT;
+    if (!cte_client) {
+      HLOG(kError, "CTE client not initialized");
+      return -1;
+    }
+
+    int deleted = 0;
+
+    // Helper: prune blobs with numeric name > target_seq_id from one tag
+    auto prune_tag = [&](const std::string& tag_name) {
+      auto tag_task = cte_client->AsyncGetOrCreateTag(tag_name);
+      tag_task.Wait();
+      auto tag_id = tag_task->tag_id_;
+      if (tag_id.IsNull()) return;
+
+      auto blobs_task = cte_client->AsyncGetContainedBlobs(tag_id);
+      blobs_task.Wait();
+
+      std::vector<chi::Future<wrp_cte::core::DelBlobTask>> del_futures;
+      for (const auto& bname : blobs_task->blob_names_) {
+        uint64_t seq = 0;
+        try { seq = std::stoull(bname); } catch (...) { continue; }
+        if (seq > target_seq_id) {
+          del_futures.push_back(cte_client->AsyncDelBlob(tag_id, bname));
+        }
+      }
+      for (auto& f : del_futures) {
+        f.Wait();
+        if (f->return_code_ == 0) deleted++;
+      }
+    };
+
+    prune_tag("Agentic_session_" + session_id);
+    prune_tag("Ctx_graph_" + session_id);
+
+    HLOG(kSuccess, "ContextRewind: removed {} records after seq {} for session {}",
+         deleted, target_seq_id, session_id);
+    return deleted;
+
+  } catch (const std::exception& e) {
+    HLOG(kError, "Error in ContextRewind: {}", e.what());
+    return -1;
+  }
+}
+
 }  // namespace iowarp
