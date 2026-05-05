@@ -882,6 +882,7 @@ if(WRP_CORE_ENABLE_TESTS)
   set_tests_properties(cr_autogen_coverage_tests PROPERTIES
     ENVIRONMENT "CHI_REPO_PATH=${CMAKE_BINARY_DIR}/bin;LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/bin:$ENV{LD_LIBRARY_PATH}"
     TIMEOUT 300
+    LABELS "msan_skip"
   )
   endif()  # WRP_CORE_ENABLE_CAE
 
