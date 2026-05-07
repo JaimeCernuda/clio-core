@@ -124,7 +124,17 @@ void CleanupSharedMemory() {
 void CleanupServer(pid_t server_pid) {
   if (server_pid > 0) {
     kill(server_pid, SIGTERM);
-    // Wait for server to exit
+    // Wait up to 5 seconds for graceful shutdown
+    for (int i = 0; i < 50; ++i) {
+      int status;
+      if (waitpid(server_pid, &status, WNOHANG) != 0) {
+        CleanupSharedMemory();
+        return;
+      }
+      usleep(100000);  // 100ms
+    }
+    // Force kill if still alive
+    kill(server_pid, SIGKILL);
     int status;
     waitpid(server_pid, &status, 0);
     // Clean up shared memory left behind by the server
@@ -263,7 +273,7 @@ TEST_CASE("ExternalClient - Client Operations", "[external_client][ipc]") {
   auto *ipc = CHI_IPC;
   REQUIRE(ipc != nullptr);
 
-  // In TCP mode (default), shared_header_ is not available so
+  // In TCP mode (default), num_sched_queues_ is not set so
   // GetNumSchedQueues returns 0. In SHM mode it would be > 0.
   u32 num_queues = ipc->GetNumSchedQueues();
   if (ipc->GetIpcMode() == IpcMode::kShm) {

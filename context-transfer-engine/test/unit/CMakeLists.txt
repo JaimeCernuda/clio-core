@@ -58,42 +58,160 @@ add_executable(test_reorganize_blob
     test_reorganize_blob.cc
 )
 
+# Create test_gpu_core executable for GPU client API tests (AsyncPutBlob/AsyncGetBlob)
+# GPU-initiated kernel compiled via add_cuda_library (clang-cuda dual-pass)
+if(WRP_CORE_ENABLE_CUDA)
+  # Unified CUDA GPU kernel library: all CTE GPU test + benchmark kernels
+  # compiled into a single device-link unit alongside chimaera_cxx_gpu.
+  # This ensures volatile completion flag reads see CDP child writes.
+  # Glob all GPU workload/test kernel sources that need unified device linking
+  file(GLOB _CTE_BENCH_GPU_SOURCES
+      ${CMAKE_SOURCE_DIR}/context-transfer-engine/benchmark/gpu/workload_*.cc)
+  file(GLOB _CR_MOD_GPU_SOURCES
+      ${CMAKE_SOURCE_DIR}/context-runtime/modules/MOD_NAME/test/test_gpu_*_gpu.cc)
+  add_cuda_library(test_gpu_initiated_kernels STATIC TRUE
+      gpu/test_gpu_initiated_gpu.cc
+      gpu/test_gpu_coroutine_gpu.cc
+      gpu/test_gpu_tiered_gpu.cc
+      ${_CTE_BENCH_GPU_SOURCES}
+      ${_CR_MOD_GPU_SOURCES}
+      INCLUDE_DIRS
+          ${CMAKE_SOURCE_DIR}/context-transfer-engine/core/include
+          ${CMAKE_SOURCE_DIR}/context-transfer-engine/benchmark
+          ${CMAKE_SOURCE_DIR}/context-transfer-engine/benchmark/gpu
+          ${CMAKE_SOURCE_DIR}/context-runtime/modules/MOD_NAME/include
+          ${CMAKE_SOURCE_DIR}/context-runtime/modules/bdev/include
+      LINK_LIBS hshm::cuda_cxx chimaera_cxx_gpu
+  )
+  target_link_libraries(test_gpu_initiated_kernels hshm::cuda_cxx)
+
+  # GPU-tiered test: PutBlob 200MB + GetBlob 100MB with HBM+pinned tiers
+  # GPU kernel compiled by nvcc, host code compiled by g++ (avoids CHI_IPC
+  # macro resolving to gpu::GetGpuIpcManager() which is nullptr on host).
+  add_executable(test_gpu_tiered
+      gpu/test_gpu_tiered.cc
+  )
+  set_target_properties(test_gpu_tiered PROPERTIES
+      CUDA_SEPARABLE_COMPILATION ON
+      LINKER_LANGUAGE CUDA
+      POSITION_INDEPENDENT_CODE ON
+  )
+  install(TARGETS test_gpu_tiered RUNTIME DESTINATION bin)
+
+  # Copy config yaml next to the source (where __FILE__ resolves)
+  add_custom_command(TARGET test_gpu_tiered POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+      ${CMAKE_CURRENT_SOURCE_DIR}/gpu/test_gpu_tiered_config.yaml
+      ${CMAKE_CURRENT_BINARY_DIR}/gpu/test_gpu_tiered_config.yaml
+  )
+
+  add_test(NAME cte_gpu_tiered_test COMMAND test_gpu_tiered)
+  set_tests_properties(cte_gpu_tiered_test PROPERTIES
+      TIMEOUT 180
+      LABELS "msan_skip"
+      ENVIRONMENT "CHI_REPO_PATH=${CMAKE_BINARY_DIR}/bin;LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/bin:$ENV{LD_LIBRARY_PATH}")
+endif()
+
+if(WRP_CORE_ENABLE_CUDA)
+add_executable(test_cte_gpu_coroutine
+    gpu/test_gpu_coroutine.cc
+)
+
+add_executable(test_gpu_core
+    gpu/test_gpu_core.cc
+)
+
+# Create test_gpu_create executable for GPU AsyncCreate tests
+# GPU kernel file compiled with HSHM_ENABLE_CUDA=1 so device APIs are available
+add_library(test_gpu_create_kernels OBJECT gpu/test_gpu_create_gpu.cu)
+target_include_directories(test_gpu_create_kernels PRIVATE
+    ${CMAKE_SOURCE_DIR}/context-transfer-engine/core/include
+    ${CMAKE_SOURCE_DIR}/context-runtime/include
+    ${CMAKE_SOURCE_DIR}/context-runtime/modules/admin/include
+    ${CMAKE_SOURCE_DIR}/context-transport-primitives/include
+    ${CMAKE_SOURCE_DIR}/build/context-transport-primitives/src/include
+)
+target_compile_definitions(test_gpu_create_kernels PRIVATE HSHM_ENABLE_CUDA=1)
+target_link_libraries(test_gpu_create_kernels PRIVATE hermes_shm_cuda)
+set_target_properties(test_gpu_create_kernels PROPERTIES
+    CUDA_SEPARABLE_COMPILATION ON
+    POSITION_INDEPENDENT_CODE ON
+)
+target_compile_options(test_gpu_create_kernels PUBLIC
+    $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr>
+)
+
+add_executable(test_gpu_create
+    gpu/test_gpu_create_cpu.cc
+    $<TARGET_OBJECTS:test_gpu_create_kernels>
+)
+set_target_properties(test_gpu_create PROPERTIES
+    CUDA_SEPARABLE_COMPILATION ON
+    LINKER_LANGUAGE CUDA
+    POSITION_INDEPENDENT_CODE ON
+)
+endif()  # WRP_CORE_ENABLE_CUDA (GPU test executables)
+
 # Include directories for all tests - using unified simple_test.h framework
 target_include_directories(cte_core_unit_tests PRIVATE
-  ${CMAKE_SOURCE_DIR}/test  # For unified simple_test.h
+
 )
 
 target_include_directories(test_core_functionality PRIVATE
-  ${CMAKE_SOURCE_DIR}/test  # For unified simple_test.h
+
 )
 
 target_include_directories(test_query PRIVATE
-  ${CMAKE_SOURCE_DIR}/test  # For unified simple_test.h
+
 )
 
 target_include_directories(test_cte_config_dpe PRIVATE
-  ${CMAKE_SOURCE_DIR}/test  # For unified simple_test.h
+
 )
 
 target_include_directories(test_tag_operations PRIVATE
-  ${CMAKE_SOURCE_DIR}/test  # For unified simple_test.h
+
 )
 
 target_include_directories(test_core_client_config PRIVATE
-  ${CMAKE_SOURCE_DIR}/test  # For unified simple_test.h
+
 )
 
 target_include_directories(test_core_runtime_coverage PRIVATE
-  ${CMAKE_SOURCE_DIR}/test  # For unified simple_test.h
+
 )
 
 target_include_directories(test_tiered_storage_stress PRIVATE
-  ${CMAKE_SOURCE_DIR}/test  # For unified simple_test.h
+
 )
 
 target_include_directories(test_reorganize_blob PRIVATE
-  ${CMAKE_SOURCE_DIR}/test  # For unified simple_test.h
+
 )
+
+if(WRP_CORE_ENABLE_CUDA)
+target_include_directories(test_cte_gpu_coroutine PRIVATE
+  ${CMAKE_SOURCE_DIR}/context-runtime/test  # For simple_test.h with g_test_finalize
+  ${CMAKE_SOURCE_DIR}/context-runtime/modules/MOD_NAME/include
+)
+
+target_include_directories(test_gpu_core PRIVATE
+
+)
+
+target_include_directories(test_gpu_create PRIVATE
+
+)
+
+target_include_directories(test_gpu_tiered PRIVATE
+  ${CMAKE_SOURCE_DIR}/context-transfer-engine/core/include
+  ${CMAKE_SOURCE_DIR}/context-runtime/include
+  ${CMAKE_SOURCE_DIR}/context-runtime/modules/admin/include
+  ${CMAKE_SOURCE_DIR}/context-runtime/modules/bdev/include
+  ${CMAKE_SOURCE_DIR}/context-transport-primitives/include
+  ${CMAKE_SOURCE_DIR}/build/context-transport-primitives/src/include
+)
+endif()  # WRP_CORE_ENABLE_CUDA (GPU include dirs)
 
 # Link against required libraries using simple_test.h framework (NOT Catch2)
 target_link_libraries(cte_core_unit_tests
@@ -203,6 +321,70 @@ target_link_libraries(test_reorganize_blob
     ${CMAKE_THREAD_LIBS_INIT}    # Threading support
 )
 
+if(WRP_CORE_ENABLE_CUDA)
+# Link test_cte_gpu_coroutine
+target_link_libraries(test_cte_gpu_coroutine
+    wrp_cte_core_runtime
+    wrp_cte_core_client
+    chimaera::admin_runtime
+    chimaera::admin_client
+    chimaera::bdev_runtime
+    chimaera::bdev_client
+    hshm::cxx
+    hermes_shm_cuda
+    test_gpu_initiated_kernels
+    ${CMAKE_THREAD_LIBS_INIT}
+)
+
+# Link test_gpu_core
+target_link_libraries(test_gpu_core
+    wrp_cte_core_runtime
+    wrp_cte_core_client
+    chimaera::admin_runtime
+    chimaera::admin_client
+    chimaera::bdev_runtime
+    chimaera::bdev_client
+    hshm::cxx
+    hermes_shm_cuda
+    test_gpu_initiated_kernels
+    ${CMAKE_THREAD_LIBS_INIT}
+)
+
+# Link test_gpu_create
+target_link_libraries(test_gpu_create
+    wrp_cte_core_runtime
+    wrp_cte_core_client
+    chimaera::admin_runtime
+    chimaera::admin_client
+    chimaera::bdev_runtime
+    chimaera::bdev_client
+    hshm::cxx
+    hermes_shm_cuda
+    ${CMAKE_THREAD_LIBS_INIT}
+)
+
+# Link test_gpu_tiered
+target_link_libraries(test_gpu_tiered
+    wrp_cte_core_runtime
+    wrp_cte_core_client
+    chimaera::admin_runtime
+    chimaera::admin_client
+    chimaera::bdev_runtime
+    chimaera::bdev_client
+    hshm::cxx
+    hermes_shm_cuda
+    test_gpu_initiated_kernels
+    ${CMAKE_THREAD_LIBS_INIT}
+)
+
+if(CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES)
+  find_package(CUDAToolkit QUIET)
+  set_property(TARGET test_cte_gpu_coroutine APPEND PROPERTY LINK_LIBRARIES "CUDA::cudart")
+  set_property(TARGET test_gpu_core APPEND PROPERTY LINK_LIBRARIES "CUDA::cudart")
+  set_property(TARGET test_gpu_tiered APPEND PROPERTY LINK_LIBRARIES "CUDA::cudart")
+endif()
+endif()  # WRP_CORE_ENABLE_CUDA (GPU link libraries)
+
 # Note: Include directories are provided automatically via linked ChiMod targets
 # wrp_cte_core_client provides ${WRP_CTE_ROOT}/core/include via transitive includes
 
@@ -255,29 +437,10 @@ add_test(NAME cte_config_tests
 add_test(NAME cte_dpe_tests
     COMMAND test_cte_config_dpe "[cte][dpe]")
 
-# Add test_core_functionality tests
-add_test(NAME cte_functional_pool_creation
-    COMMAND test_core_functionality)
-
-add_test(NAME cte_functional_target_registration
-    COMMAND test_core_functionality)
-
-add_test(NAME cte_functional_putblob
-    COMMAND test_core_functionality)
-
-add_test(NAME cte_functional_getblob
-    COMMAND test_core_functionality)
-
-add_test(NAME cte_functional_putget_integration
-    COMMAND test_core_functionality)
-
-add_test(NAME cte_functional_putget_comprehensive
-    COMMAND test_core_functionality)
-
-add_test(NAME cte_functional_reorganize
-    COMMAND test_core_functionality)
-
-add_test(NAME cte_functional_e2e_workflow
+# Add test_core_functionality as a single test (the binary runs all 9 internal
+# test cases in one invocation; duplicating CTest entries causes parallel runs
+# that fight over shared memory and ports).
+add_test(NAME cte_functional_all
     COMMAND test_core_functionality)
 
 # Add test_query tests - use test names for filtering (simple_test.h filters by name, not tags)
@@ -347,145 +510,15 @@ add_test(NAME cte_tag_large
 add_test(NAME cte_tag_edge
     COMMAND test_tag_operations "Tag - Edge")
 
-# Add test_core_client_config tests - comprehensive Client and Config API coverage tests
-add_test(NAME cte_client_config_default
-    COMMAND test_core_client_config "Config - Default")
+# Single-process runs of test_core_client_config / test_core_runtime_coverage.
+# Previously each Catch2 SECTION was registered as a standalone ctest entry
+# (27 + 19), which serialized via RESOURCE_LOCK but multiplied chimaera
+# init/finalize cycles and exposed shutdown ZMQ races.
+add_test(NAME cte_client_config_all
+    COMMAND test_core_client_config)
 
-add_test(NAME cte_client_config_file
-    COMMAND test_core_client_config "Config - Load from Valid YAML File")
-
-add_test(NAME cte_client_config_invalid_file
-    COMMAND test_core_client_config "Config - Load from Invalid File Path")
-
-add_test(NAME cte_client_config_empty_path
-    COMMAND test_core_client_config "Config - Load from Empty Path")
-
-add_test(NAME cte_client_config_string
-    COMMAND test_core_client_config "Config - Load from Valid YAML String")
-
-add_test(NAME cte_client_config_empty_string
-    COMMAND test_core_client_config "Config - Load from Empty String")
-
-add_test(NAME cte_client_config_invalid_yaml
-    COMMAND test_core_client_config "Config - Load from Invalid YAML")
-
-add_test(NAME cte_client_config_environment
-    COMMAND test_core_client_config "Config - Load from Environment")
-
-add_test(NAME cte_client_config_save
-    COMMAND test_core_client_config "Config - Save to File")
-
-add_test(NAME cte_client_list_targets
-    COMMAND test_core_client_config "Client - AsyncListTargets")
-
-add_test(NAME cte_client_stat_targets
-    COMMAND test_core_client_config "Client - AsyncStatTargets")
-
-add_test(NAME cte_client_get_target_info
-    COMMAND test_core_client_config "Client - AsyncGetTargetInfo")
-
-add_test(NAME cte_client_unregister_target
-    COMMAND test_core_client_config "Client - AsyncUnregisterTarget")
-
-add_test(NAME cte_client_get_or_create_tag
-    COMMAND test_core_client_config "Client - AsyncGetOrCreateTag Direct")
-
-add_test(NAME cte_client_del_tag_by_id
-    COMMAND test_core_client_config "Client - AsyncDelTag by ID")
-
-add_test(NAME cte_client_del_tag_by_name
-    COMMAND test_core_client_config "Client - AsyncDelTag by Name")
-
-add_test(NAME cte_client_get_tag_size
-    COMMAND test_core_client_config "Client - AsyncGetTagSize")
-
-add_test(NAME cte_client_putblob
-    COMMAND test_core_client_config "Client - AsyncPutBlob Direct")
-
-add_test(NAME cte_client_getblob
-    COMMAND test_core_client_config "Client - AsyncGetBlob Direct")
-
-add_test(NAME cte_client_delblob
-    COMMAND test_core_client_config "Client - AsyncDelBlob")
-
-add_test(NAME cte_client_reorganize_blob
-    COMMAND test_core_client_config "Client - AsyncReorganizeBlob Direct")
-
-add_test(NAME cte_client_get_blob_score
-    COMMAND test_core_client_config "Client - AsyncGetBlobScore Direct")
-
-add_test(NAME cte_client_get_blob_size
-    COMMAND test_core_client_config "Client - AsyncGetBlobSize Direct")
-
-add_test(NAME cte_client_get_contained_blobs
-    COMMAND test_core_client_config "Client - AsyncGetContainedBlobs Direct")
-
-add_test(NAME cte_client_tag_query
-    COMMAND test_core_client_config "Client - AsyncTagQuery")
-
-add_test(NAME cte_client_blob_query
-    COMMAND test_core_client_config "Client - AsyncBlobQuery")
-
-add_test(NAME cte_client_poll_telemetry
-    COMMAND test_core_client_config "Client - AsyncPollTelemetryLog")
-
-# Add test_core_runtime_coverage tests - comprehensive runtime method coverage
-add_test(NAME cte_runtime_get_target_info_success
-    COMMAND test_core_runtime_coverage "Runtime - GetTargetInfo Success Path")
-
-add_test(NAME cte_runtime_get_target_info_error
-    COMMAND test_core_runtime_coverage "Runtime - GetTargetInfo NonExistent Target")
-
-add_test(NAME cte_runtime_unregister_success
-    COMMAND test_core_runtime_coverage "Runtime - UnregisterTarget Success")
-
-add_test(NAME cte_runtime_unregister_error
-    COMMAND test_core_runtime_coverage "Runtime - UnregisterTarget NonExistent")
-
-add_test(NAME cte_runtime_delblob_success
-    COMMAND test_core_runtime_coverage "Runtime - DelBlob Success Path")
-
-add_test(NAME cte_runtime_delblob_nonexistent
-    COMMAND test_core_runtime_coverage "Runtime - DelBlob NonExistent Blob")
-
-add_test(NAME cte_runtime_delblob_empty
-    COMMAND test_core_runtime_coverage "Runtime - DelBlob Empty Name")
-
-add_test(NAME cte_runtime_get_blob_score_success
-    COMMAND test_core_runtime_coverage "Runtime - GetBlobScore Success")
-
-add_test(NAME cte_runtime_get_blob_score_nonexistent
-    COMMAND test_core_runtime_coverage "Runtime - GetBlobScore NonExistent Blob")
-
-add_test(NAME cte_runtime_get_blob_score_empty
-    COMMAND test_core_runtime_coverage "Runtime - GetBlobScore Empty Name")
-
-add_test(NAME cte_runtime_get_blob_size_success
-    COMMAND test_core_runtime_coverage "Runtime - GetBlobSize Success")
-
-add_test(NAME cte_runtime_get_blob_size_error
-    COMMAND test_core_runtime_coverage "Runtime - GetBlobSize NonExistent")
-
-add_test(NAME cte_runtime_get_tag_size
-    COMMAND test_core_runtime_coverage "Runtime - GetTagSize Success")
-
-add_test(NAME cte_runtime_deltag_by_name
-    COMMAND test_core_runtime_coverage "Runtime - DelTag by Name Success")
-
-add_test(NAME cte_runtime_deltag_by_id
-    COMMAND test_core_runtime_coverage "Runtime - DelTag by ID Success")
-
-add_test(NAME cte_runtime_get_contained_blobs_success
-    COMMAND test_core_runtime_coverage "Runtime - GetContainedBlobs Success")
-
-add_test(NAME cte_runtime_get_contained_blobs_empty
-    COMMAND test_core_runtime_coverage "Runtime - GetContainedBlobs Empty Tag")
-
-add_test(NAME cte_runtime_list_targets
-    COMMAND test_core_runtime_coverage "Runtime - ListTargets Success")
-
-add_test(NAME cte_runtime_stat_targets
-    COMMAND test_core_runtime_coverage "Runtime - StatTargets Success")
+add_test(NAME cte_runtime_coverage_all
+    COMMAND test_core_runtime_coverage)
 
 # Set test properties for proper execution environment
 set_tests_properties(
@@ -512,16 +545,9 @@ set_tests_properties(
 )
 
 set_tests_properties(
-    cte_functional_pool_creation
-    cte_functional_target_registration
-    cte_functional_putblob
-    cte_functional_getblob
-    cte_functional_putget_integration
-    cte_functional_putget_comprehensive
-    cte_functional_reorganize
-    cte_functional_e2e_workflow
+    cte_functional_all
     PROPERTIES
-        TIMEOUT 300  # 5 minute timeout for each test
+        TIMEOUT 300  # 5 minute timeout
         LABELS "functional;core;cte"
         ENVIRONMENT "LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/bin:$ENV{LD_LIBRARY_PATH}"
 )
@@ -561,64 +587,16 @@ set_tests_properties(
         ENVIRONMENT "LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/bin:$ENV{LD_LIBRARY_PATH}"
 )
 
-set_tests_properties(
-    cte_client_config_default
-    cte_client_config_file
-    cte_client_config_invalid_file
-    cte_client_config_empty_path
-    cte_client_config_string
-    cte_client_config_empty_string
-    cte_client_config_invalid_yaml
-    cte_client_config_environment
-    cte_client_config_save
-    cte_client_list_targets
-    cte_client_stat_targets
-    cte_client_get_target_info
-    cte_client_unregister_target
-    cte_client_get_or_create_tag
-    cte_client_del_tag_by_id
-    cte_client_del_tag_by_name
-    cte_client_get_tag_size
-    cte_client_putblob
-    cte_client_getblob
-    cte_client_delblob
-    cte_client_reorganize_blob
-    cte_client_get_blob_score
-    cte_client_get_blob_size
-    cte_client_get_contained_blobs
-    cte_client_tag_query
-    cte_client_blob_query
-    cte_client_poll_telemetry
-    PROPERTIES
-        TIMEOUT 300  # 5 minute timeout for each test
-        LABELS "unit;core;cte;client;config"
-        ENVIRONMENT "LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/bin:$ENV{LD_LIBRARY_PATH}"
+set_tests_properties(cte_client_config_all PROPERTIES
+    TIMEOUT 600
+    LABELS "unit;core;cte;client;config"
+    ENVIRONMENT "LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/bin:$ENV{LD_LIBRARY_PATH}"
 )
 
-set_tests_properties(
-    cte_runtime_get_target_info_success
-    cte_runtime_get_target_info_error
-    cte_runtime_unregister_success
-    cte_runtime_unregister_error
-    cte_runtime_delblob_success
-    cte_runtime_delblob_nonexistent
-    cte_runtime_delblob_empty
-    cte_runtime_get_blob_score_success
-    cte_runtime_get_blob_score_nonexistent
-    cte_runtime_get_blob_score_empty
-    cte_runtime_get_blob_size_success
-    cte_runtime_get_blob_size_error
-    cte_runtime_get_tag_size
-    cte_runtime_deltag_by_name
-    cte_runtime_deltag_by_id
-    cte_runtime_get_contained_blobs_success
-    cte_runtime_get_contained_blobs_empty
-    cte_runtime_list_targets
-    cte_runtime_stat_targets
-    PROPERTIES
-        TIMEOUT 300  # 5 minute timeout for each test
-        LABELS "unit;core;cte;runtime;coverage"
-        ENVIRONMENT "LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/bin:$ENV{LD_LIBRARY_PATH}"
+set_tests_properties(cte_runtime_coverage_all PROPERTIES
+    TIMEOUT 600
+    LABELS "unit;core;cte;runtime;coverage"
+    ENVIRONMENT "LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/bin:$ENV{LD_LIBRARY_PATH}"
 )
 
 # Add tiered storage stress tests
@@ -651,6 +629,45 @@ set_tests_properties(
         ENVIRONMENT "LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/bin:$ENV{LD_LIBRARY_PATH}"
 )
 
+if(WRP_CORE_ENABLE_CUDA OR WRP_CORE_ENABLE_ROCM)
+# GPU coroutine subtask tests (gpu2gpu dispatch + coroutine suspend/resume)
+add_test(NAME cte_gpu_coroutine
+    COMMAND test_cte_gpu_coroutine)
+
+# GPU core tests run together in one process so Put and Get share the same
+# initialized fixture and the stored blob persists between test cases.
+add_test(NAME cte_gpu_core_all
+    COMMAND test_gpu_core)
+
+# GPU create tests - AsyncCreate from GPU kernel
+add_test(NAME cte_gpu_create
+    COMMAND test_gpu_create)
+
+set_tests_properties(
+    cte_gpu_coroutine
+    PROPERTIES
+        TIMEOUT 120
+        LABELS "gpu;cte;coroutine;msan_skip"
+        ENVIRONMENT "LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/bin:$ENV{LD_LIBRARY_PATH}"
+)
+
+set_tests_properties(
+    cte_gpu_core_all
+    PROPERTIES
+        TIMEOUT 120
+        LABELS "gpu;cte;core;msan_skip"
+        ENVIRONMENT "LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/bin:$ENV{LD_LIBRARY_PATH}"
+)
+
+set_tests_properties(
+    cte_gpu_create
+    PROPERTIES
+        TIMEOUT 120
+        LABELS "gpu;cte;create;msan_skip"
+        ENVIRONMENT "LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/bin:$ENV{LD_LIBRARY_PATH}"
+)
+endif()  # WRP_CORE_ENABLE_CUDA OR WRP_CORE_ENABLE_ROCM
+
 # Mark all CTE tests as msan_skip (they use ZMQ via chimaera runtime which is uninstrumented)
 set_tests_properties(
     cte_core_pool_creation
@@ -669,14 +686,7 @@ set_tests_properties(
     cte_core_performance
     cte_config_tests
     cte_dpe_tests
-    cte_functional_pool_creation
-    cte_functional_target_registration
-    cte_functional_putblob
-    cte_functional_getblob
-    cte_functional_putget_integration
-    cte_functional_putget_comprehensive
-    cte_functional_reorganize
-    cte_functional_e2e_workflow
+    cte_functional_all
     cte_query_tag_exact
     cte_query_tag_wildcard
     cte_query_tag_alternation
@@ -698,56 +708,48 @@ set_tests_properties(
     cte_tag_async
     cte_tag_large
     cte_tag_edge
-    cte_client_config_default
-    cte_client_config_file
-    cte_client_config_invalid_file
-    cte_client_config_empty_path
-    cte_client_config_string
-    cte_client_config_empty_string
-    cte_client_config_invalid_yaml
-    cte_client_config_environment
-    cte_client_config_save
-    cte_client_list_targets
-    cte_client_stat_targets
-    cte_client_get_target_info
-    cte_client_unregister_target
-    cte_client_get_or_create_tag
-    cte_client_del_tag_by_id
-    cte_client_del_tag_by_name
-    cte_client_get_tag_size
-    cte_client_putblob
-    cte_client_getblob
-    cte_client_delblob
-    cte_client_reorganize_blob
-    cte_client_get_blob_score
-    cte_client_get_blob_size
-    cte_client_get_contained_blobs
-    cte_client_tag_query
-    cte_client_blob_query
-    cte_client_poll_telemetry
-    cte_runtime_get_target_info_success
-    cte_runtime_get_target_info_error
-    cte_runtime_unregister_success
-    cte_runtime_unregister_error
-    cte_runtime_delblob_success
-    cte_runtime_delblob_nonexistent
-    cte_runtime_delblob_empty
-    cte_runtime_get_blob_score_success
-    cte_runtime_get_blob_score_nonexistent
-    cte_runtime_get_blob_score_empty
-    cte_runtime_get_blob_size_success
-    cte_runtime_get_blob_size_error
-    cte_runtime_get_tag_size
-    cte_runtime_deltag_by_name
-    cte_runtime_deltag_by_id
-    cte_runtime_get_contained_blobs_success
-    cte_runtime_get_contained_blobs_empty
-    cte_runtime_list_targets
-    cte_runtime_stat_targets
+    cte_client_config_all
+    cte_runtime_coverage_all
     cte_tiered_storage_all
     cte_reorganize_all
     PROPERTIES LABELS "msan_skip"
 )
+if(WRP_CORE_ENABLE_CUDA OR WRP_CORE_ENABLE_ROCM)
+set_tests_properties(
+    cte_gpu_coroutine
+    cte_gpu_core_all
+    cte_gpu_create
+    PROPERTIES LABELS "msan_skip"
+)
+endif()
+
+# Tests that start a full Chimaera runtime share /tmp/chimaera_iowarp SHM
+# segments and TCP/IPC ports, so they must NOT run in parallel.
+set_tests_properties(
+    cte_tag_construction
+    cte_tag_putblob
+    cte_tag_getblob
+    cte_tag_errors
+    cte_tag_metadata
+    cte_tag_reorganize
+    cte_tag_async
+    cte_tag_large
+    cte_tag_edge
+    cte_functional_all
+    cte_client_config_all
+    cte_runtime_coverage_all
+    cte_tiered_storage_all
+    cte_reorganize_all
+    PROPERTIES RESOURCE_LOCK "chimaera_runtime"
+)
+if(WRP_CORE_ENABLE_CUDA OR WRP_CORE_ENABLE_ROCM)
+set_tests_properties(
+    cte_gpu_coroutine
+    cte_gpu_core_all
+    cte_gpu_create
+    PROPERTIES RESOURCE_LOCK "chimaera_runtime"
+)
+endif()
 
 # All cte_functional_* tests run test_core_functionality (9 test cases, each
 # initializing and finalizing the full chimaera runtime).  After multiple
@@ -756,14 +758,7 @@ set_tests_properties(
 # defects under ASan.  The same uninstrumented-runtime category caused all CTE
 # tests to be msan_skip'd.  Skip the whole functional group under ASan.
 set_tests_properties(
-    cte_functional_pool_creation
-    cte_functional_target_registration
-    cte_functional_putblob
-    cte_functional_getblob
-    cte_functional_putget_integration
-    cte_functional_putget_comprehensive
-    cte_functional_reorganize
-    cte_functional_e2e_workflow
+    cte_functional_all
     PROPERTIES LABELS "msan_skip;asan_skip"
 )
 
@@ -771,7 +766,11 @@ set_tests_properties(
 # ------------------------------------------------------------------------------
 # Install Targets
 # ------------------------------------------------------------------------------
-install(TARGETS cte_core_unit_tests test_core_functionality test_query test_cte_config_dpe test_tag_operations test_core_client_config test_core_runtime_coverage test_tiered_storage_stress test_reorganize_blob
+set(_CTE_TEST_TARGETS cte_core_unit_tests test_core_functionality test_query test_cte_config_dpe test_tag_operations test_core_client_config test_core_runtime_coverage test_tiered_storage_stress test_reorganize_blob)
+if(WRP_CORE_ENABLE_CUDA)
+  list(APPEND _CTE_TEST_TARGETS test_cte_gpu_coroutine test_gpu_core test_gpu_create)
+endif()
+install(TARGETS ${_CTE_TEST_TARGETS}
     LIBRARY DESTINATION lib
     ARCHIVE DESTINATION lib
     RUNTIME DESTINATION bin

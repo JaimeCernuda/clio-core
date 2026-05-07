@@ -161,6 +161,10 @@ class CTECoreFunctionalTestFixture {
       REQUIRE(success);
     }
 
+    // Drain ZMQ background threads in main() before static dtors fire — the
+    // shutdown race here used to produce flaky timeouts under repeated runs.
+    SimpleTest::g_test_finalize = chi::CHIMAERA_FINALIZE;
+
     // Generate unique pool ID for this test session
     int rand_id = 1000 + rand() % 9000;  // Random ID 1000-9999
     core_pool_id_ = chi::PoolId(static_cast<chi::u32>(rand_id), 0);
@@ -2221,16 +2225,18 @@ TEST_CASE("End-to-End CTE Core Workflow", "[cte][core][integration]") {
       CTECoreFunctionalTestFixture::kCTECorePoolId, params));
   INFO("Step 1 completed: CTE core pool initialized");
 
-  // Step 2: Register multiple targets
+  // Step 2: Register multiple targets with unique bdev pool IDs.
+  // Each target must use a distinct PoolId so the pool manager creates
+  // separate bdev pools; reusing the same ID causes the second CreatePool
+  // to return the existing pool, leaving only one target registered.
   const std::vector<std::string> target_suffixes = {"target_1", "target_2"};
-  for (const auto &suffix : target_suffixes) {
-    // Use the actual file path as target_name since that's what matters for
-    // bdev creation
-    std::string target_name = fixture->test_storage_path_ + "_" + suffix;
+  for (size_t i = 0; i < target_suffixes.size(); ++i) {
+    std::string target_name =
+        fixture->test_storage_path_ + "_" + target_suffixes[i];
     chi::u32 result = fixture->RegisterTargetAsync(
         target_name, chimaera::bdev::BdevType::kFile,
         CTECoreFunctionalTestFixture::kTestTargetSize, chi::PoolQuery::Local(),
-        chi::PoolId(607, 0));
+        chi::PoolId(607 + static_cast<chi::u32>(i), 0));
     REQUIRE(result == 0);
   }
   INFO("Step 2 completed: Multiple targets registered");
